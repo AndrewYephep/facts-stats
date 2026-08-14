@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GradeTrack — System Map</title>
+<style>
+  :root {
+    --bg: #07070c;
+    --bg2: #0b0c14;
+    --panel: rgba(15, 16, 26, 0.78);
+    --panel-solid: #0f101a;
+    --border: rgba(255, 255, 255, 0.09);
+    --border-soft: rgba(255, 255, 255, 0.05);
+    --text: #e8e9f2;
+    --muted: #8a8fa3;
+    --muted2: #5d6276;
+    --blue: #3b82f6;
+    --blue-l: #60a5fa;
+    --purple: #8b5cf6;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --teal: #2dd4bf;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+
+  /* ---------- animated background ---------- */
+  .bg-aurora {
+    position: fixed; inset: 0; z-index: 0; overflow: hidden;
+    background:
+      radial-gradient(1200px 800px at 12% -10%, rgba(59,130,246,0.10), transparent 60%),
+      radial-gradient(1100px 700px at 88% 8%, rgba(139,92,246,0.10), transparent 60%),
+      radial-gradient(1000px 900px at 50% 115%, rgba(45,212,191,0.07), transparent 60%),
+      linear-gradient(180deg, #07070c, #0a0b13 60%, #07070c);
+  }
+  .bg-aurora::before, .bg-aurora::after {
+    content: ""; position: absolute; border-radius: 50%; filter: blur(90px);
+    will-change: transform;
+  }
+  .bg-aurora::before {
+    width: 620px; height: 620px; left: 12%; top: -180px;
+    background: radial-gradient(circle, rgba(59,130,246,0.16), transparent 65%);
+    animation: drift1 34s ease-in-out infinite alternate;
+  }
+  .bg-aurora::after {
+    width: 560px; height: 560px; right: 6%; bottom: -220px;
+    background: radial-gradient(circle, rgba(139,92,246,0.14), transparent 65%);
+    animation: drift2 40s ease-in-out infinite alternate;
+  }
+  @keyframes drift1 { from { transform: translate3d(0,0,0) scale(1);} to { transform: translate3d(60px,40px,0) scale(1.15);} }
+  @keyframes drift2 { from { transform: translate3d(0,0,0) scale(1.1);} to { transform: translate3d(-50px,-30px,0) scale(1);} }
+
+  .grid-overlay {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 90% 90% at 50% 40%, #000 30%, transparent 100%);
+  }
+
+  /* ---------- header ---------- */
+  .header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    display: flex; align-items: center; gap: 18px;
+    padding: 12px 20px;
+    background: linear-gradient(180deg, rgba(8,9,15,0.85), rgba(8,9,15,0.55));
+    border-bottom: 1px solid var(--border-soft);
+    backdrop-filter: blur(14px);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+    background: conic-gradient(from 210deg, #3b82f6, #8b5cf6, #2dd4bf, #3b82f6);
+    box-shadow: 0 0 22px rgba(96,165,250,0.35);
+    display: grid; place-items: center;
+  }
+  .brand .logo svg { width: 18px; height: 18px; color: #fff; }
+  .brand h1 { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+  .brand .sub { font-size: 10.5px; color: var(--muted2); letter-spacing: 0.04em; margin-top: 1px; white-space: nowrap; }
+
+  .leds { display: flex; gap: 16px; margin-left: 8px; flex-wrap: wrap; }
+  .led { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .led .dot { width: 8px; height: 8px; border-radius: 50%; background: #2a2e3c; position: relative; }
+  .led .dot.on { background: var(--green); box-shadow: 0 0 10px rgba(34,197,94,0.8); animation: blip 2.4s ease-in-out infinite; }
+  .led .dot.warn { background: var(--amber); box-shadow: 0 0 10px rgba(245,158,11,0.8); animation: blip 1.4s ease-in-out infinite; }
+  .led .dot.off { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.5); }
+  .led .dot.busy { background: #60a5fa; box-shadow: 0 0 12px rgba(96,165,250,0.9); animation: blip 0.7s ease-in-out infinite; }
+  @keyframes blip { 0%,100% { opacity: 1; transform: scale(1);} 50% { opacity: 0.55; transform: scale(0.82);} }
+
+  .spacer { flex: 1; }
+  .hstat { font-size: 10.5px; color: var(--muted2); font-family: var(--mono); white-space: nowrap; }
+  .btn {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 9px; padding: 6px 11px;
+    font-size: 11px; cursor: pointer; transition: all 0.15s ease; white-space: nowrap;
+  }
+  .btn:hover { color: var(--text); background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.18); }
+  .btn svg { width: 12px; height: 12px; vertical-align: -1.5px; }
+
+  /* ---------- stage ---------- */
+  .stage { position: fixed; inset: 56px 0 0 0; z-index: 1; cursor: grab; overflow: hidden; }
+  .stage.dragging { cursor: grabbing; }
+  .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+
+  .zone-label {
+    position: absolute; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    opacity: 0.75; pointer-events: none;
+    white-space: nowrap;
+    text-shadow: 0 1px 6px rgba(0,0,0,0.7);
+  }
+
+  svg.edges { position: absolute; left: 0; top: 0; pointer-events: none; }
+  svg.particles { position: absolute; left: 0; top: 0; pointer-events: none; }
+
+  .edge {
+    fill: none; stroke-linecap: round;
+    transition: opacity 0.25s ease, stroke-width 0.25s ease;
+  }
+  .edge.flow { animation: dashflow 1.1s linear infinite; }
+  @keyframes dashflow { to { stroke-dashoffset: -24; } }
+  .edge-label {
+    fill: rgba(138,143,163,0.55); font-size: 9px;
+    font-family: var(--mono); pointer-events: none;
+    transition: fill 0.2s ease;
+  }
+  .edge.hl .edge-label, .edge.hot .edge-label { fill: rgba(232,233,242,0.95); }
+
+  /* ---------- node cards ---------- */
+  .node-card {
+    position: absolute; transform: translate(-50%, -50%);
+    width: 196px; min-height: 74px;
+    background: linear-gradient(180deg, rgba(22,24,36,0.9), rgba(13,14,22,0.92));
+    border: 1px solid color-mix(in srgb, var(--acc) 38%, var(--border));
+    border-radius: 14px;
+    padding: 10px 12px 9px;
+    cursor: pointer;
+    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.25s ease;
+    backdrop-filter: blur(8px);
+    user-select: none;
+    overflow: visible;
+  }
+  .node-card::before {
+    content: ""; position: absolute; top: -1px; left: 18px; right: 18px; height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: linear-gradient(90deg, transparent, var(--acc), transparent);
+    opacity: 0.9;
+  }
+  .node-card:hover { transform: translate(-50%, -50%) scale(1.05); z-index: 20; }
+  .node-card.kind-data { width: 172px; }
+  .node-card.kind-external { width: 168px; }
+  .node-card.kind-frontend { width: 200px; }
+
+  .nc-head { display: flex; align-items: center; gap: 8px; }
+  .nc-ico { width: 20px; height: 20px; flex-shrink: 0; display: grid; place-items: center; }
+  .nc-ico svg { width: 17px; height: 17px; }
+  .nc-name {
+    flex: 1; font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #262a38; }
+  .nc-sub { font-size: 10px; color: var(--muted2); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nc-meta { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+  .nc-line { font-size: 10.5px; font-family: var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nc-line.doing { color: var(--muted2); font-size: 10px; }
+
+  /* state colors */
+  .node-card.state-running { border-color: rgba(34,197,94,0.45); box-shadow: 0 0 24px rgba(34,197,94,0.14), inset 0 0 18px rgba(34,197,94,0.04); }
+  .node-card.state-running .nc-dot { background: var(--green); box-shadow: 0 0 9px rgba(34,197,94,0.9); animation: blip 2.2s ease-in-out infinite; }
+  .node-card.state-busy { border-color: rgba(96,165,250,0.7); box-shadow: 0 0 34px rgba(96,165,250,0.28), inset 0 0 22px rgba(96,165,250,0.07); }
+  .node-card.state-busy .nc-dot { background: #60a5fa; box-shadow: 0 0 12px rgba(96,165,250,1); animation: blip 0.65s ease-in-out infinite; }
+  .node-card.state-warn { border-color: rgba(245,158,11,0.5); box-shadow: 0 0 22px rgba(245,158,11,0.12); }
+  .node-card.state-warn .nc-dot { background: var(--amber); box-shadow: 0 0 9px rgba(245,158,11,0.8); animation: blip 1.5s ease-in-out infinite; }
+  .node-card.state-off { border-color: var(--border); }
+  .node-card.state-off .nc-dot { background: #2a2e3c; }
+  .node-card.state-off .nc-line { color: var(--muted2); }
+  .node-card.state-down { border-color: rgba(239,68,68,0.4); }
+  .node-card.state-down .nc-dot { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.6); }
+
+  .node-card .flash-ring {
+    position: absolute; inset: -1px; border-radius: 14px; pointer-events: none;
+    border: 1.5px solid var(--amber);
+    opacity: 0; transform: scale(1);
+  }
+  .node-card.flash .flash-ring { animation: flashRing 1.8s ease-out forwards; }
+  .node-card.flash { border-color: rgba(245,158,11,0.8) !important; box-shadow: 0 0 30px rgba(245,158,11,0.35) !important; }
+  @keyframes flashRing { 0% { opacity: 1; transform: scale(0.9); } 100% { opacity: 0; transform: scale(1.22); } }
+
+  /* ---------- ticker ---------- */
+  .ticker {
+    position: fixed; left: 16px; bottom: 16px; z-index: 40;
+    width: 420px; max-width: calc(100vw - 32px);
+    max-height: 190px; overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 10px 12px;
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.55;
+    backdrop-filter: blur(12px);
+  }
+  .ticker .tt-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft);
+  }
+  .ticker .tt-title { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted2); font-weight: 700; }
+  .ticker .tt-clear { background: none; border: 0; color: var(--muted2); cursor: pointer; font-size: 10px; font-family: var(--mono); }
+  .ticker .tt-clear:hover { color: var(--text); }
+  .t-row { display: flex; gap: 8px; align-items: baseline; animation: rowIn 0.3s ease-out; }
+  @keyframes rowIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .t-time { color: var(--muted2); flex-shrink: 0; }
+  .t-node { flex-shrink: 0; font-weight: 700; opacity: 0.9; }
+  .t-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .t-row.log .t-text { color: #9fb6ff; }
+  .ticker::-webkit-scrollbar { width: 5px; }
+  .ticker::-webkit-scrollbar-thumb { background: #262a38; border-radius: 3px; }
+
+  /* ---------- legend ---------- */
+  .legend {
+    position: fixed; right: 16px; top: 72px; z-index: 40;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 12px 14px; width: 176px;
+    backdrop-filter: blur(12px);
+    font-size: 11px;
+  }
+  .legend h4 { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted2); margin-bottom: 8px; font-weight: 700; }
+  .legend .lz { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--muted); }
+  .legend .lz .sw { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+  .legend .sep { height: 1px; background: var(--border-soft); margin: 8px 0; }
+  .legend .ls { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--muted); }
+  .legend .ls .st { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ---------- tooltip ---------- */
+  .tip {
+    position: fixed; z-index: 70; pointer-events: none;
+    background: var(--panel-solid); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 11px; font-size: 11px;
+    box-shadow: 0 12px 34px rgba(0,0,0,0.55);
+    max-width: 300px; display: none;
+  }
+  .tip .tip-title { font-weight: 600; font-size: 11.5px; }
+  .tip .tip-note { color: var(--muted); margin-top: 2px; font-size: 10.5px; line-height: 1.45; }
+  .tip .tip-flow { color: var(--blue-l); margin-top: 4px; font-family: var(--mono); font-size: 10px; }
+
+  /* ---------- inspector drawer ---------- */
+  .drawer {
+    position: fixed; top: 56px; right: 0; bottom: 0; z-index: 60;
+    width: 430px; max-width: 100vw;
+    background: linear-gradient(180deg, rgba(13,14,22,0.96), rgba(10,11,18,0.97));
+    border-left: 1px solid var(--border);
+    backdrop-filter: blur(16px);
+    transform: translateX(105%); transition: transform 0.28s cubic-bezier(0.22,1,0.36,1);
+    display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); box-shadow: -30px 0 60px rgba(0,0,0,0.5); }
+  .dr-head {
+    display: flex; align-items: center; gap: 12px; padding: 16px 18px 12px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .dr-ico { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; flex-shrink: 0;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
+  .dr-ico svg { width: 20px; height: 20px; }
+  .dr-titles { flex: 1; min-width: 0; }
+  .dr-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+  .dr-sub { font-size: 11px; color: var(--muted2); margin-top: 2px; }
+  .dr-close {
+    width: 30px; height: 30px; border-radius: 9px; border: 1px solid var(--border);
+    background: rgba(255,255,255,0.04); color: var(--muted); cursor: pointer;
+    display: grid; place-items: center; font-size: 14px; transition: all 0.15s;
+  }
+  .dr-close:hover { color: var(--text); background: rgba(255,255,255,0.1); }
+
+  .dr-body { flex: 1; overflow-y: auto; padding: 16px 18px 26px; }
+  .dr-body::-webkit-scrollbar { width: 6px; }
+  .dr-body::-webkit-scrollbar-thumb { background: #262a38; border-radius: 3px; }
+
+  .dr-zone { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; padding: 4px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); margin-bottom: 14px; }
+  .dr-zone .zsw { width: 8px; height: 8px; border-radius: 2px; }
+
+  .dr-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted2); font-weight: 700; margin: 16px 0 7px; }
+  .dr-role { font-size: 13px; line-height: 1.6; color: #c7cad8; }
+  .dr-facts { display: flex; flex-direction: column; gap: 6px; }
+  .dr-fact { display: flex; gap: 10px; font-size: 12px; line-height: 1.45; }
+  .dr-fact .k { color: var(--muted2); flex-shrink: 0; width: 108px; font-family: var(--mono); font-size: 11px; padding-top: 1px; }
+  .dr-fact .v { color: #c7cad8; min-width: 0; }
+  .dr-eps { display: flex; flex-direction: column; gap: 5px; }
+  .dr-ep { display: flex; gap: 10px; font-family: var(--mono); font-size: 11px; }
+  .dr-ep .m { color: var(--green); flex-shrink: 0; width: 44px; }
+  .dr-ep .p { color: #aeb6cc; word-break: break-all; }
+
+  .dr-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .dr-stat { background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); border-radius: 10px; padding: 9px 11px; }
+  .dr-stat .k { font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted2); }
+  .dr-stat .v { font-family: var(--mono); font-size: 13px; margin-top: 3px; color: var(--text); }
+  .dr-stat .v.ok { color: var(--green); }
+  .dr-stat .v.bad { color: var(--red); }
+  .dr-stat .v.warn { color: var(--amber); }
+
+  .dr-open-file {
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 18px;
+    background: linear-gradient(180deg, #3b82f6, #2563eb);
+    color: #fff; border: 0; border-radius: 10px; padding: 10px 14px;
+    font-size: 12.5px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 8px 24px rgba(59,130,246,0.3); transition: all 0.18s ease;
+  }
+  .dr-open-file:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  .dr-open-file svg { width: 15px; height: 15px; }
+
+  .fileview { margin-top: 16px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: rgba(7,8,13,0.6); }
+  .fv-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); }
+  .fv-head .fn { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+  .fv-head .fb { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted2); }
+  .fv-head .fclose { background: none; border: 0; color: var(--muted2); cursor: pointer; font-size: 12px; padding: 2px 4px; }
+  .fv-head .fclose:hover { color: var(--text); }
+  .fv-body { max-height: 46vh; overflow: auto; }
+  .fv-body pre { font-family: var(--mono); font-size: 11px; line-height: 1.5; padding: 10px 0; min-width: max-content; }
+  .fv-line { display: flex; }
+  .fv-line:hover { background: rgba(255,255,255,0.03); }
+  .fv-num { width: 44px; flex-shrink: 0; text-align: right; padding-right: 12px; color: #3a3f52; user-select: none; }
+  .fv-code { white-space: pre; padding-right: 18px; color: #c8cce0; }
+  .fv-loading { padding: 16px; color: var(--muted2); font-family: var(--mono); font-size: 11px; }
+  .tok.kw { color: #c084fc; }
+  .tok.cm { color: #5b6077; font-style: italic; }
+  .tok.st { color: #86efac; }
+  .tok.num { color: #fbbf24; }
+  .tok.fn { color: #7dd3fc; }
+  .tok.de { color: #f9a8d4; }
+  .tok.kw2 { color: #60a5fa; }
+
+  .drawer-msg { font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+  .loading {
+    position: fixed; inset: 0; z-index: 90; display: grid; place-items: center;
+    background: var(--bg);
+  }
+  .loading .ring {
+    width: 46px; height: 46px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.08); border-top-color: var(--blue-l);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading p { margin-top: 14px; font-size: 12px; color: var(--muted2); font-family: var(--mono); }
+
+  .offline-banner {
+    position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 45;
+    background: rgba(127,29,29,0.85); color: #fecaca; border: 1px solid rgba(239,68,68,0.5);
+    border-radius: 999px; padding: 6px 16px; font-size: 11px; font-weight: 600;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: none; white-space: nowrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001s !important; animation-iteration-count: 1 !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bg-aurora"></div>
+<div class="grid-overlay"></div>
+
+<header class="header">
+  <div class="brand">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+    </div>
+    <div>
+      <h1>GradeTrack</h1>
+      <div class="sub">LIVE PIPELINE MAP</div>
+    </div>
+  </div>
+
+  <div class="leds">
+    <div class="led"><span class="dot" id="led-dashboard"></span>Dashboard API</div>
+    <div class="led"><span class="dot" id="led-classroom"></span>Classroom API</div>
+    <div class="led"><span class="dot" id="led-scraper"></span>Scraper</div>
+    <div class="led"><span class="dot" id="led-ai"></span>AI Coach</div>
+    <div class="led"><span class="dot" id="led-monitor"></span>Monitor</div>
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="hstat" id="hstat-sys">—</div>
+  <button class="btn" id="btn-fit" title="Fit view (F)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+    Fit
+  </button>
+</header>
+
+<div class="offline-banner" id="offline-banner">Monitor offline — showing last known state</div>
+
+<main class="stage" id="stage">
+  <div class="world" id="world"></div>
+</main>
+
+<div class="legend" id="legend">
+  <h4>Zones</h4>
+  <div id="legend-zones"></div>
+  <div class="sep"></div>
+  <h4>State</h4>
+  <div class="ls"><span class="st" style="background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.7)"></span>running / up</div>
+  <div class="ls"><span class="st" style="background:#60a5fa;box-shadow:0 0 8px rgba(96,165,250,.9)"></span>actively working</div>
+  <div class="ls"><span class="st" style="background:#f59e0b"></span>recent activity</div>
+  <div class="ls"><span class="st" style="background:#ef4444"></span>down / offline</div>
+</div>
+
+<div class="ticker" id="ticker">
+  <div class="tt-head">
+    <span class="tt-title">Activity feed</span>
+    <button class="tt-clear" id="ticker-clear">clear</button>
+  </div>
+  <div id="ticker-body"></div>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<aside class="drawer" id="drawer">
+  <div class="dr-head">
+    <div class="dr-ico" id="dr-ico"></div>
+    <div class="dr-titles">
+      <div class="dr-name" id="dr-name"></div>
+      <div class="dr-sub" id="dr-sub"></div>
+    </div>
+    <button class="dr-close" id="dr-close" title="Close (Esc)">✕</button>
+  </div>
+  <div class="dr-body" id="dr-body"></div>
+</aside>
+
+<div class="loading" id="loading">
+  <div>
+    <div class="ring"></div>
+    <p id="loading-text">Connecting to monitor…</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   GradeTrack — System Map
+   Live, dependency-free architecture visualization.
+   Polls /api/status from monitor.py every few seconds.
+   ============================================================ */
+
+const $ = (s, r) => (r || document).querySelector(s);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const ICONS = {
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"/>',
+  spider: '<rect x="7" y="9" width="10" height="7" rx="2"/><path d="M12 9V5M9 3.5l3 1.5 3-1.5M9 16v2.5M12 16v2.5M15 16v2.5"/><path d="M12 5c-1.5 0-3-.8-4-2M12 5c1.5 0 3-.8 4-2"/>',
+  server: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h.01M11 16.5h.01"/>',
+  cpu: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+  brain: '<path d="M12 4a2 2 0 0 0-2 2v.6a2 2 0 0 0-2.5 1.9v.3A2 2 0 0 0 5 10.8v1.4a2 2 0 0 0 2 2v.6a2 2 0 0 0 4 0V6a2 2 0 0 0-2-2zM12 4a2 2 0 0 1 2 2v.6a2 2 0 0 1 2.5 1.9v.3a2 2 0 0 1 2.5 1.9v1.4a2 2 0 0 1-2 2v.6a2 2 0 0 1-4 0V6a2 2 0 0 1 2-2z"/><path d="M10 4.5c1.5.5 2.5 1.6 2 3.5M14 4.5c-1.5.5-2.5 1.6-2 3.5M12 15v-2.5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7.5l9 6 9-6"/>',
+  book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13zM20 21H6.5A2.5 2.5 0 0 1 4 18.5"/>',
+  screen: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
+  cloud: '<path d="M17.5 19a4.5 4.5 0 0 0 .4-8.98 7 7 0 0 0-13.3 1.95A4.6 4.6 0 0 0 6 19h11.5z"/>'
+};
+
+let GRAPH = null;
+const STATE = {
+  status: null,
+  nodeById: {},
+  edgeById: {},
+  edges: [],
+  nodeEls: {},
+  edgeEls: {},
+  edgePaths: {},
+  particles: [],
+  prevFileMtime: {},
+  lastMainText: {},
+  lastDoingText: {},
+  ageBase: {},      // data-node: {age, at}
+  upBase: {},       // module: {uptime, at}
+  lastParticleAt: 0,
+  statusPolls: 0,
+  statusFails: 0,
+  lastEventSeq: 0,
+  tipTimer: null
+};
+const VIEW = { x: 0, y: 0, k: 1 };
+
+const stage = $("#stage");
+const world = $("#world");
+const tickerBody = $("#ticker-body");
+
+/* ---------------- utilities ---------------- */
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function fmtSize(b) {
+  if (b == null) return "—";
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return (b / 1024).toFixed(b < 10240 ? 1 : 0) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+}
+function fmtAge(s, brief) {
+  if (s == null || isNaN(s)) return "—";
+  if (s < 10) return brief ? "just now" : "just now";
+  if (s < 60) return Math.floor(s) + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (brief ? "" : Math.floor(s % 60) + "s ") + "ago".trim();
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m ago";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h ago";
+}
+function fmtUp(s) {
+  if (s == null) return "";
+  if (s < 60) return Math.floor(s) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d";
+}
+function fmtCPU(v) { return (v == null ? 0 : v).toFixed(1) + "%"; }
+function zoneColor(id) { return (GRAPH.zones.find(z => z.id === id) || {}).color || "#94a3b8"; }
+function zoneLabel(id) { return (GRAPH.zones.find(z => z.id === id) || {}).label || id; }
+function iconSVG(name, color) {
+  const p = ICONS[name] || ICONS.file;
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + p + "</svg>";
+}
+
+/* ---------------- graph construction ---------------- */
+
+function nodePosition(id) {
+  const n = STATE.nodeById[id];
+  return n ? { x: n.x, y: n.y } : { x: 0, y: 0 };
+}
+
+function insetPoint(a, b, r) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return { x: a.x + (dx / len) * r, y: a.y + (dy / len) * r };
+}
+function nodeRadius(n) { return n.kind === "data" ? 52 : n.kind === "external" ? 50 : 62; }
+
+function edgePath(e, i, count) {
+  const a = nodePosition(e.from), b = nodePosition(e.to);
+  const ra = nodeRadius(STATE.nodeById[e.from]), rb = nodeRadius(STATE.nodeById[e.to]);
+  const s = insetPoint(a, b, ra), t = insetPoint(b, a, rb);
+  const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
+  let bend = 0;
+  if (count > 1) bend = (i % 2 ? 1 : -1) * Math.max(14, 22 * Math.ceil(i / 2));
+  const dx = t.x - s.x, dy = t.y - s.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const cx = mx + (-dy / len) * bend, cy = my + (dx / len) * bend;
+  return { d: "M" + s.x + " " + s.y + " Q" + cx + " " + cy + " " + t.x + " " + t.y,
+           s: { x: s.x, y: s.y }, t: { x: t.x, y: t.y }, c: { x: cx, y: cy } };
+}
+function pointOnQuad(s, c, t, tt) {
+  const a = 1 - tt;
+  return {
+    x: a * a * s.x + 2 * a * tt * c.x + tt * tt * t.x,
+    y: a * a * s.y + 2 * a * tt * c.y + tt * tt * t.y
+  };
+}
+
+const SVGNS = "http://www.w3.org/2000/svg";
+function elNS(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+function buildMarkers(svgDefs) {
+  const colors = [...new Set(GRAPH.nodes.map(n => n.color))];
+  colors.forEach(color => {
+    const marker = elNS("marker", {
+      id: "arr-" + color.replace("#", ""), viewBox: "0 0 10 10",
+      refX: "8.5", refY: "5", markerWidth: "5.2", markerHeight: "5.2", orient: "auto-start-reverse"
+    });
+    const p = elNS("path", { d: "M0 0L10 5L0 10z", fill: color });
+    marker.appendChild(p);
+    svgDefs.appendChild(marker);
+  });
+}
+
+function buildWorld() {
+  const W = GRAPH.width, H = GRAPH.height;
+  world.innerHTML = "";
+
+  // svg edges
+  const svgEdges = elNS("svg", { class: "edges", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  const defs = elNS("defs", {});
+  buildMarkers(defs);
+  svgEdges.appendChild(defs);
+
+  const pairs = {};
+  GRAPH.edges.forEach((e, i) => {
+    const key = e.from + ">" + e.to;
+    (pairs[key] = pairs[key] || []).push(i);
+  });
+
+  GRAPH.edges.forEach((e, i) => {
+    const idxInPair = pairs[e.from + ">" + e.to].indexOf(i);
+    const countInPair = pairs[e.from + ">" + e.to].length;
+    const g = elNS("g", { class: "edge-g", "data-edge": e.id });
+    const geo = edgePath(e, idxInPair, countInPair);
+    const path = elNS("path", {
+      d: geo.d, class: "edge", "data-edge": e.id,
+      markerEnd: "url(#arr-" + e.color.replace("#", "") + ")",
+      stroke: e.color, "stroke-width": 1.3,
+      "stroke-dasharray": "5 7", "stroke-opacity": 0.28
+    });
+    const mid = pointOnQuad(geo.s, geo.c, geo.t, 0.5);
+    const label = elNS("text", {
+      class: "edge-label", "data-edge": e.id,
+      x: mid.x + 8, y: mid.y - 6, "text-anchor": "middle"
+    });
+    label.textContent = e.label;
+    g.appendChild(path);
+    g.appendChild(label);
+    svgEdges.appendChild(g);
+    STATE.edgeEls[e.id] = { g, path, label, geo, color: e.color };
+    STATE.edgeById[e.id] = e;
+    // hover via invisible wide hit path
+    const hit = elNS("path", {
+      d: geo.d, "data-edge": e.id, "stroke-width": 14,
+      stroke: "transparent", fill: "none",
+      style: "cursor:pointer;pointer-events:stroke"
+    });
+    hit.addEventListener("pointerenter", () => showTip(e, hit));
+    hit.addEventListener("pointerleave", () => hideTip());
+    svgEdges.appendChild(hit);
+  });
+  world.appendChild(svgEdges);
+
+  // particles svg
+  const svgP = elNS("svg", { class: "particles", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  world.appendChild(svgP);
+  STATE.particlesSvg = svgP;
+
+  // node cards
+  GRAPH.nodes.forEach(n => {
+    const card = document.createElement("div");
+    card.className = "node-card kind-" + n.kind + " state-off";
+    card.dataset.id = n.id;
+    card.style.left = n.x + "px";
+    card.style.top = n.y + "px";
+    const base = n.kind === "data" ? 172 : n.kind === "external" ? 168 : n.kind === "frontend" ? 200 : 196;
+    card.style.width = Math.round(base * (n.size || 1)) + "px";
+    const accent = n.color;
+    card.style.setProperty("--acc", accent);
+    card.innerHTML =
+      '<div class="nc-head">' +
+        '<span class="nc-ico">' + iconSVG(n.icon, accent) + "</span>" +
+        '<span class="nc-name">' + esc(n.label) + "</span>" +
+        '<span class="nc-dot"></span></div>' +
+      '<div class="nc-sub">' + esc(n.sub) + "</div>" +
+      '<div class="nc-meta">' +
+        '<div class="nc-line main">·</div>' +
+        '<div class="nc-line doing"></div>' +
+      "</div>" +
+      '<div class="flash-ring"></div>';
+    card.addEventListener("click", () => openDrawer(n));
+    card.addEventListener("mouseenter", () => highlightEdges(n.id, true));
+    card.addEventListener("mouseleave", () => highlightEdges(n.id, false));
+    world.appendChild(card);
+    STATE.nodeEls[n.id] = card;
+  });
+
+  // legend zones
+  const lz = $("#legend-zones");
+  GRAPH.zones.forEach(z => {
+    const row = document.createElement("div");
+    row.className = "lz";
+    row.innerHTML = '<span class="sw" style="background:' + z.color + '"></span><span>' + esc(z.label) + "</span>";
+    lz.appendChild(row);
+  });
+
+  fitView();
+  STATE.edges = GRAPH.edges.map(e => {
+    const path = STATE.edgeEls[e.id].path;
+    return { edge: e, intensity: 0, acc: 0, len: path.getTotalLength(), geo: STATE.edgeEls[e.id].geo };
+  });
+}
+
+/* ---------------- view transform ---------------- */
+
+function applyView() {
+  world.style.transform = "translate(" + VIEW.x + "px, " + VIEW.y + "px) scale(" + VIEW.k + ")";
+}
+function fitView() {
+  const cw = stage.clientWidth, ch = stage.clientHeight;
+  const pad = 60;
+  const k = clamp(Math.min((cw - pad) / GRAPH.width, (ch - pad) / GRAPH.height), 0.25, 1.3);
+  VIEW.k = k;
+  VIEW.x = (cw - GRAPH.width * k) / 2;
+  VIEW.y = (ch - GRAPH.height * k) / 2 + 20;
+  applyView();
+}
+
+let drag = null;
+stage.addEventListener("pointerdown", e => {
+  if (e.target.closest(".node-card") || e.target.closest(".edge-g") || e.target.closest("[data-edge]")) return;
+  drag = { x: e.clientX, y: e.clientY, vx: VIEW.x, vy: VIEW.y };
+  stage.classList.add("dragging");
+});
+window.addEventListener("pointermove", e => {
+  if (!drag) return;
+  VIEW.x = drag.vx + (e.clientX - drag.x);
+  VIEW.y = drag.vy + (e.clientY - drag.y);
+  applyView();
+});
+window.addEventListener("pointerup", () => { drag = null; stage.classList.remove("dragging"); });
+
+stage.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = stage.getBoundingClientRect();
+  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  const factor = Math.exp(-e.deltaY * 0.0012);
+  const nk = clamp(VIEW.k * factor, 0.22, 2.6);
+  const r = nk / VIEW.k;
+  VIEW.x = px - (px - VIEW.x) * r;
+  VIEW.y = py - (py - VIEW.y) * r;
+  VIEW.k = nk;
+  applyView();
+}, { passive: false });
+
+$("#btn-fit").addEventListener("click", fitView);
+window.addEventListener("keydown", e => {
+  if (e.key === "f" || e.key === "F") fitView();
+  if (e.key === "Escape") closeDrawer();
+});
+
+/* ---------------- node status rendering ---------------- */
+
+function nodeStateClass(n, sn, st) {
+  if (sn.kind === "external") return "state-warn"; // externals shown amber-ish unless configured below
+  if (n.kind === "data") {
+    const f = st.files && st.files[n.id];
+    if (f && f.exists) return "state-warn";
+    return "state-off";
+  }
+  if (sn.running) {
+    if (sn.scrapeRunning || (sn.kind === "library" && false)) return "state-busy";
+    if (sn.health === false) return "state-warn";
+    return "state-running";
+  }
+  if (sn.health === false) return "state-down";
+  if (n.kind === "frontend" || n.kind === "library") return "state-off";
+  return "state-off";
+}
+
+function describeNode(n, sn, st) {
+  const files = st.files || {};
+  const f = files[n.id];
+  let main = "·", doing = "", cls = "state-off";
+
+  if (n.kind === "data") {
+    if (f && f.exists) {
+      main = fmtSize(f.size) + " · " + fmtAge(f.age);
+      doing = n.id === "settings" ? "goal " + (st.settings && st.settings.goal) : "storage";
+      cls = f.age < 300 ? "state-warn" : "state-off";
+      if (f.age > 86400 * 7) cls = "state-off";
+    } else {
+      main = "missing";
+      cls = "state-down";
+    }
+    return { main, doing, cls };
+  }
+
+  if (sn.kind === "external") {
+    const configured = sn.configured;
+    const pl = sn.payloadAge;
+    main = n.id === "facts_sis" ? "scrape target" :
+           n.id === "ollama" ? "key " + (configured ? "set" : "missing") :
+           n.id === "smtp" ? "relay " + (configured ? "ready" : "missing") : "";
+    doing = n.id === "appscript" && pl != null ? "last payload " + fmtAge(pl, true) : "";
+    cls = (n.id === "ollama" || n.id === "smtp") ? (configured ? "state-warn" : "state-off") : "state-off";
+    return { main, doing, cls };
+  }
+
+  if (n.kind === "frontend") {
+    const dash = st.nodes && st.nodes.dashboard;
+    main = dash && dash.health ? "dashboard online" : "awaiting backend";
+    doing = "reports · chat · settings";
+    cls = dash && dash.health ? "state-warn" : "state-off";
+    return { main, doing, cls };
+  }
+
+  if (n.kind === "library") {
+    if (n.id === "ai") {
+      main = n.id === "ai" && sn.configured ? "ollama connected" : "no API key";
+      doing = sn.insights + " insights · " + (sn.status ? sn.status.replace(/_/g, " ") : "waiting for grade update");
+      cls = sn.configured ? "state-warn" : "state-off";
+    } else if (n.id === "emailer") {
+      main = sn.configured ? "SMTP ready" : "SMTP not configured";
+      doing = "new · updated · homework · watchlist";
+      cls = sn.configured ? "state-warn" : "state-off";
+    } else if (n.id === "classroom_client") {
+      main = sn.payloadAge != null ? "payload " + fmtAge(sn.payloadAge, true) : "no payload";
+      doing = "homework section → emailer";
+      cls = sn.payloadAge != null && sn.payloadAge < 10800 ? "state-warn" : "state-off";
+    } else if (n.id === "compute") {
+      const da = sn.dataAge;
+      main = da != null ? "data " + fmtAge(da, true) : "waiting for data";
+      doing = "running averages · trends · GPA";
+      cls = da != null && da < 86400 ? "state-warn" : "state-off";
+    } else if (n.id === "analytics") {
+      main = "threshold model · 95%";
+      doing = "watchlist · charts · email flags";
+      cls = "state-off";
+    }
+    return { main, doing, cls };
+  }
+
+  // modules (servers / batch)
+  if (sn.running) {
+    const busy = sn.scrapeRunning || (sn.id === "scraper" && sn.scrapeRunning);
+    main = busy ? "working — scraping…" : "running · " + fmtCPU(sn.cpu) + " cpu";
+    doing = busy ? (sn.lastLog ? sn.lastLog : "parsing gradebooks…") :
+            (n.id === "dashboard"
+              ? (sn.autoScrapeEnabled ? "auto-scrape " + (sn.autoScrapeSchedule || "scheduled") : "auto-scrape off")
+              : n.id === "api_server" ? "listening :8787 · payload " + (sn.payloadAge != null ? fmtAge(sn.payloadAge, true) : "—")
+              : "up " + fmtUp(sn.uptime));
+    if (n.id === "scraper" && !busy) doing = sn.schedule ? "next auto " + sn.schedule : "idle · manual trigger";
+    cls = busy ? "state-busy" : "state-running";
+  } else {
+    if (n.id === "dashboard") {
+      main = sn.health === false ? "down" : "not running";
+      doing = "start: uvicorn dashboard_server.py";
+      cls = sn.health === false ? "state-down" : "state-off";
+    } else if (n.id === "api_server") {
+      main = sn.health === false ? "down" : "not running";
+      doing = "start: python3 api_server.py";
+      cls = sn.health === false ? "state-down" : "state-off";
+    } else {
+      main = "idle";
+      doing = "trigger: dashboard → POST /api/scrape";
+      cls = "state-off";
+    }
+  }
+  return { main, doing, cls };
+}
+
+function setLed(id, state) {
+  const dot = $("#led-" + id);
+  if (dot) dot.className = "dot" + (state ? " " + state : "");
+}
+
+function updateNode(n, st) {
+  const el = STATE.nodeEls[n.id];
+  if (!el) return;
+  const sn = st.nodes[n.id] || { kind: n.kind };
+  const d = describeNode(n, sn, st);
+  el.classList.remove("state-running", "state-busy", "state-warn", "state-off", "state-down");
+  el.classList.add(d.cls);
+
+  const main = $(".nc-line.main", el);
+  if (main && STATE.lastMainText[n.id] !== d.main) {
+    STATE.lastMainText[n.id] = d.main;
+    main.textContent = d.main;
+  }
+  const doing = $(".nc-line.doing", el);
+  if (doing && STATE.lastDoingText[n.id] !== d.doing) {
+    STATE.lastDoingText[n.id] = d.doing;
+    doing.textContent = d.doing;
+    doing.style.color = d.cls === "state-busy" ? "#9fb6ff" : "";
+  }
+  // age / uptime live anchors
+  if (n.kind === "data" && sn.age) { /* handled by file stats */ }
+}
+
+function detectFileFlash(st) {
+  const files = st.files || {};
+  Object.keys(files).forEach(id => {
+    const f = files[id];
+    if (!f || !f.exists) return;
+    const prev = STATE.prevFileMtime[id];
+    if (prev && prev !== f.mtime) {
+      const el = STATE.nodeEls[id];
+      if (el) {
+        el.classList.remove("flash");
+        void el.offsetWidth;
+        el.classList.add("flash");
+        setTimeout(() => el.classList.remove("flash"), 2000);
+        pushTicker(id, f.size ? f.size + " bytes" : "", f.name || id + ".json");
+      }
+    }
+    STATE.prevFileMtime[id] = f.mtime;
+  });
+}
+
+function applyStatus(st) {
+  STATE.status = st;
+  STATE.statusPolls++;
+
+  const d = st.nodes.dashboard || {};
+  const a = st.nodes.api_server || {};
+  const s = st.nodes.scraper || {};
+  const ai = st.nodes.ai || {};
+
+  setLed("dashboard", d.running ? (d.health ? "on" : "warn") : (d.health === false ? "off" : "off"));
+  setLed("classroom", a.running ? (a.health ? "on" : "warn") : "off");
+  setLed("scraper", s.scrapeRunning ? "busy" : s.running ? "on" : "off");
+  setLed("ai", ai.configured ? "on" : "off");
+  setLed("monitor", "on");
+
+  GRAPH.nodes.forEach(n => updateNode(n, st));
+  detectFileFlash(st);
+
+  const evs = st.events || [];
+  let maxSeq = STATE.lastEventSeq;
+  for (let i = 0; i < evs.length; i++) {
+    const ev = evs[i];
+    if (ev.n == null) continue;
+    if (ev.n > maxSeq) maxSeq = ev.n;
+    if (ev.n <= STATE.lastEventSeq) continue;
+    pushTicker(ev.node, ev.text, "", ev.kind === "log");
+  }
+  STATE.lastEventSeq = maxSeq;
+
+  const meta = st.meta || {};
+  const sett = st.settings || {};
+  $("#hstat-sys").textContent =
+    "Q" + (sett.currentTerm || "") + " · goal " + (sett.goal || "—") + " · " +
+    (meta.sample_ms != null ? meta.sample_ms.toFixed(0) + "ms" : "—") + " sample · " +
+    GRAPH.nodes.length + " nodes · " + GRAPH.edges.length + " flows";
+}
+
+/* ---------------- ticker ---------------- */
+
+function pushTicker(nodeId, text, extra, isLog) {
+  const n = STATE.nodeById[nodeId];
+  const color = n ? n.color : "#94a3b8";
+  const label = n ? n.label : (nodeId || "sys");
+  const row = document.createElement("div");
+  row.className = "t-row" + (isLog ? " log" : "");
+  const ts = new Date().toTimeString().slice(0, 8);
+  row.innerHTML =
+    '<span class="t-time">' + ts + "</span>" +
+    '<span class="t-node" style="color:' + color + '">' + esc(label) + "</span>" +
+    '<span class="t-text">' + esc(text) + "</span>";
+  tickerBody.appendChild(row);
+  while (tickerBody.childElementCount > 260) tickerBody.firstChild.remove();
+  tickerBody.scrollTop = tickerBody.scrollHeight;
+}
+$("#ticker-clear").addEventListener("click", () => { tickerBody.innerHTML = ""; });
+
+/* ---------------- edge hover / tooltip ---------------- */
+
+function highlightEdges(nodeId, on) {
+  GRAPH.edges.forEach(e => {
+    if (e.from === nodeId || e.to === nodeId) {
+      const g = STATE.edgeEls[e.id].g;
+      if (on) g.classList.add("hl"); else g.classList.remove("hl");
+    }
+  });
+}
+function showTip(e, hitEl) {
+  const tip = $("#tip");
+  const intensity = STATE.edges.find(x => x.edge.id === e.id);
+  const i = intensity ? Math.round(intensity.intensity * 100) : 0;
+  tip.innerHTML =
+    '<div class="tip-title">' + esc(e.from === "browser" ? STATE.nodeById[e.from].label : e.from) + " → " +
+    esc(e.to === "browser" ? STATE.nodeById[e.to].label : e.to) + "</div>" +
+    '<div class="tip-flow">' + esc(e.label) + " · " + e.kind.toUpperCase() + "</div>" +
+    (e.note ? '<div class="tip-note">' + esc(e.note) + "</div>" : "") +
+    '<div class="tip-note">current flow intensity: ' + i + "%</div>";
+  tip.style.display = "block";
+  positionTip();
+}
+function hideTip() { $("#tip").style.display = "none"; }
+function positionTip() {
+  const tip = $("#tip");
+  const r = tip.getBoundingClientRect();
+  const mx = clamp(event && event.clientX || window.innerWidth / 2, 10, window.innerWidth - r.width - 10);
+  const my = clamp(event && event.clientY || 40, 10, window.innerHeight - r.height - 10);
+  tip.style.left = mx + 14 + "px";
+  tip.style.top = my + 14 + "px";
+}
+window.addEventListener("pointermove", e => { STATE.lastPointer = { x: e.clientX, y: e.clientY }; });
+
+/* ---------------- particles ---------------- */
+
+function edgeIntensity(e, now) {
+  const st = STATE.status;
+  if (!st) return 0;
+  const nodes = st.nodes;
+  const dash = nodes.dashboard || {};
+  const apis = nodes.api_server || {};
+  const scr = nodes.scraper || {};
+  const running = id => !!(nodes[id] && nodes[id].running);
+  const fresh = (id, within) => { const f = st.files && st.files[id]; return !!(f && f.exists && f.age != null && f.age < within); };
+  const ok = id => !!(nodes[id] && nodes[id].health);
+  const cfg = id => !!(nodes[id] && nodes[id].configured);
+  const scraping = !!(scr.scrapeRunning || running("scraper"));
+  const serving = !!ok("dashboard");
+  const ep = name => { const s = dash.endpoints && dash.endpoints[name]; return !!(s && s.ok); };
+  let I = 0;
+  const id = e.id;
+
+  // ---- Ingest: FACTS ⇄ scraper (browser session) ----
+  if (id === "e01" || id === "e02") {
+    if (scraping) I = Math.max(I, 0.85);
+  }
+  // ---- scraper → data / post-scrape chains ----
+  else if (id === "e03" || id === "e04") { if (running("scraper")) I = Math.max(I, 0.85); }
+  else if (id === "e05" || id === "e06" || id === "e07") { if (scraping) I = Math.max(I, 0.6); }
+  // ---- data → dashboard reads ----
+  else if (id === "e08" || id === "e09") {
+    if (fresh("grades_data", 180)) I = Math.max(I, 0.7);
+    if (ep("computed")) I = Math.max(I, 0.35);  // snapshot pulled on every /api/computed request
+  }
+  else if (id === "e10") { if (serving || ep("settings")) I = Math.max(I, 0.35); }
+  else if (id === "e11") { if (cfg("ai") && serving) I = Math.max(I, 0.3); }
+  else if (id === "e12") { if (scr.autoScrapeEnabled || scraping) I = Math.max(I, 0.25); }
+  // ---- compute + analytics spine ----
+  else if (id === "e13" || id === "e14") { if (ep("computed")) I = Math.max(I, 0.6); }
+  else if (id === "e15") { if (ep("grades")) I = Math.max(I, 0.55); }
+  // ---- dashboard launches scrape ----
+  else if (id === "e16") { if (scraping) I = Math.max(I, 0.8); }
+  // ---- dashboard ↔ browser (site serving) ----
+  else if (id === "e17" || id === "e18") { if (serving) I = Math.max(I, 0.45); }
+  // ---- AI lane ----
+  else if (id === "e19") { if (serving && ep("insights")) I = Math.max(I, 0.5); }
+  else if (id === "e20") {
+    if (cfg("ai") && serving) I = Math.max(I, 0.35);              // AI arm connected while serving
+    if (fresh("ai_insights", 7200)) I = Math.max(I, 0.6);          // recent generation
+  }
+  else if (id === "e21") { if (scraping || fresh("ai_insights", 3600)) I = Math.max(I, 0.55); }
+  else if (id === "e22") {
+    if (ep("insights")) I = Math.max(I, 0.45);
+    if (fresh("ai_insights", 7200)) I = Math.max(I, 0.3);
+  }
+  // ---- classroom lane ----
+  else if (id === "e23") { if (fresh("classroom_latest", 86400)) I = Math.max(I, 0.35); }
+  else if (id === "e24") { if (apis.health && fresh("classroom_latest", 86400)) I = Math.max(I, 0.5); }
+  else if (id === "e25") {
+    if (apis.health) I = Math.max(I, 0.4);
+    if (fresh("classroom_latest", 10800)) I = Math.max(I, 0.45);
+  }
+  else if (id === "e26") { if (cfg("emailer") && fresh("classroom_latest", 86400)) I = Math.max(I, 0.4); }
+  // ---- email ----
+  else if (id === "e27") {
+    if (cfg("emailer") && serving) I = Math.max(I, 0.3);           // pipeline armed while serving
+    if (cfg("emailer") && fresh("grades_data", 600)) I = Math.max(I, 0.6);  // post-scrape report
+    if (scraping) I = Math.max(I, 0.7);                            // send at scrape tail
+  }
+
+  // scrape surge wave traveling through the chain
+  if (scraping && e.chain != null) {
+    const t = now / 1000;
+    const wave = (Math.sin((t - e.chain * 0.55) / 0.9) + 1) / 2;
+    I = Math.max(I, wave * 0.95);
+  }
+
+  return clamp(I, 0, 1);
+}
+
+function spawnParticle(entry, color) {
+  if (STATE.particles.length >= 70 || reducedMotion) return;
+  const svg = STATE.particlesSvg;
+  const head = elNS("circle", { r: 1.9, fill: color, "fill-opacity": 0.95 });
+  head.setAttribute("filter", "url(#pglow)");
+  const tail = elNS("line", { stroke: color, "stroke-width": 1.6, "stroke-linecap": "round" });
+  svg.appendChild(tail);
+  svg.appendChild(head);
+  const len = entry.len;
+  const dur = Math.max(0.5, len / 360) + Math.random() * 0.4;
+  STATE.particles.push({ head, tail, t: 0, dur, len, geo: entry.geo, edge: entry.edge });
+}
+
+function updateParticles(dt) {
+  const svg = STATE.particlesSvg;
+  if (!svg) return;
+  for (let i = STATE.particles.length - 1; i >= 0; i--) {
+    const p = STATE.particles[i];
+    p.t += dt / p.dur;
+    if (p.t >= 1) {
+      p.head.remove(); p.tail.remove();
+      STATE.particles.splice(i, 1);
+      continue;
+    }
+    const prev = Math.max(0, p.t - dt / p.dur);
+    const a = pointOnQuad(p.geo.s, p.geo.c, p.geo.t, p.t);
+    const b = pointOnQuad(p.geo.s, p.geo.c, p.geo.t, prev);
+    p.head.setAttribute("cx", a.x);
+    p.head.setAttribute("cy", a.y);
+    p.head.setAttribute("r", 1.5 + Math.sin(p.t * Math.PI) * 0.8);
+    p.tail.setAttribute("x1", b.x); p.tail.setAttribute("y1", b.y);
+    p.tail.setAttribute("x2", a.x); p.tail.setAttribute("y2", a.y);
+  }
+}
+
+/* ---------------- rAF loop ---------------- */
+
+let lastFrame = performance.now();
+let clockTick = 0;
+let scrapeLedBlink = 0;
+
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastFrame) / 1000);
+  lastFrame = now;
+  clockTick += dt;
+
+  if (GRAPH && STATE.status) {
+    // smooth ages/uptimes on local clock, re-render ~1x/s
+    if (clockTick >= 1) {
+      clockTick = 0;
+      const st = STATE.status;
+      GRAPH.nodes.forEach(n => {
+        const el = STATE.nodeEls[n.id];
+        if (!el) return;
+        const sn = st.nodes[n.id];
+        const f = st.files[n.id];
+        if (n.kind === "data" && f && f.exists) {
+          const live = f.age + (now - STATE.ageBaseAt) / 1000;
+          const text = fmtSize(f.size) + " · " + fmtAge(live);
+          const main = $(".nc-line.main", el);
+          if (main && STATE.lastMainText[n.id] !== text) { STATE.lastMainText[n.id] = text; main.textContent = text; }
+        }
+        if (sn && sn.running && sn.uptime != null) {
+          const live = sn.uptime + (now - STATE.upBaseAt) / 1000;
+          const doing = $(".nc-line.doing", el);
+          if (doing && n.kind !== "data" && sn.scrapeRunning) {
+            const txt = sn.lastLog ? sn.lastLog : "parsing gradebooks…";
+            if (STATE.lastDoingText[n.id] !== txt) { STATE.lastDoingText[n.id] = txt; doing.textContent = txt; doing.style.color = "#9fb6ff"; }
+          }
+        }
+      });
+    }
+
+    // edges + particles
+    STATE.edges.forEach(entry => {
+      const I = edgeIntensity(entry.edge, now);
+      entry.intensity += (I - entry.intensity) * 0.12;
+      const i = entry.intensity;
+      const el = STATE.edgeEls[entry.edge.id];
+      const active = i > 0.4;
+      el.path.classList.toggle("flow", active);
+      el.g.classList.toggle("hot", active);
+      el.path.setAttribute("stroke-opacity", (0.14 + i * 0.86).toFixed(3));
+      el.path.setAttribute("stroke-width", (1.2 + i * 1.9).toFixed(2));
+      el.path.setAttribute("stroke-dasharray", active ? "2 4" : "5 7");
+      entry.acc += i * 2.1 * dt;
+      if (entry.acc >= 1) {
+        entry.acc -= 1;
+        spawnParticle(entry, entry.edge.color);
+      }
+    });
+    updateParticles(dt);
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ---------------- drawer / inspector ---------------- */
+
+function buildStats(n, st) {
+  const sn = st.nodes[n.id] || {};
+  const f = st.files[n.id];
+  const stats = [];
+  const add = (k, v, c) => stats.push('<div class="dr-stat"><div class="k">' + k + '</div><div class="v ' + (c || "") + '">' + v + "</div></div>");
+
+  if (sn.running) {
+    add("process", "RUNNING", "ok");
+    add("pid", sn.pid);
+    add("cpu", fmtCPU(sn.cpu) + " · " + fmtCPU(sn.mem) + " mem");
+    add("uptime", fmtUp(sn.uptime));
+    if (sn.id === "scraper" || sn.scrapeRunning !== undefined) {
+      add("scrape state", sn.scrapeRunning ? "RUNNING" : "idle", sn.scrapeRunning ? "warn" : "");
+      if (sn.exitCode != null) add("last exit", sn.exitCode === 0 ? "ok (0)" : "code " + sn.exitCode, sn.exitCode === 0 ? "ok" : "bad");
+    }
+  } else if (sn.health === false) {
+    add("service", "DOWN", "bad");
+    add("process", "not running");
+  } else if (sn.kind === "external") {
+    add("provider", "EXTERNAL");
+    add("configured", sn.configured ? "yes" : "no", sn.configured ? "ok" : "bad");
+    if (sn.payloadAge != null) add("last payload", fmtAge(sn.payloadAge));
+  } else {
+    add("kind", (sn.kind || n.kind).toUpperCase());
+  }
+
+  if (f && f.exists) {
+    add("file", f.path.split("facts-stats/")[1] || f.path);
+    add("size", fmtSize(f.size));
+    add("last written", fmtAge(f.age), f.age < 300 ? "warn" : "");
+  } else if (f) {
+    add("file", "missing on disk", "bad");
+  }
+
+  if (n.id === "ai" && sn.configured !== undefined) {
+    add("ollama", sn.configured ? "configured" : "no key", sn.configured ? "ok" : "bad");
+    add("insights", sn.insights + " generated · " + sn.manual + " manual");
+    if (sn.status) add("status", sn.status.replace(/_/g, " "), sn.status === "current" ? "ok" : "warn");
+  }
+  if (n.id === "dashboard" && st.settings) {
+    add("goal", st.settings.goal);
+    add("auto-scrape", st.settings.autoScrapeEnabled ? st.settings.autoScrapeSchedule || "scheduled" : "off", st.settings.autoScrapeEnabled ? "ok" : "");
+    add("model", st.settings.ollamaModel || "—");
+  }
+  if (n.id === "api_server") {
+    add("assignments", sn.assignments != null ? sn.assignments : "—");
+    if (sn.payloadAge != null) add("payload age", fmtAge(sn.payloadAge), sn.payloadAge < 10800 ? "" : "warn");
+  }
+  if (n.id === "emailer") add("SMTP", sn.configured ? "ready" : "not configured", sn.configured ? "ok" : "bad");
+  return stats.join("");
+}
+
+function renderDrawer(n, st) {
+  const accent = n.color;
+  $("#dr-ico").style.borderColor = accent + "44";
+  $("#dr-ico").innerHTML = iconSVG(n.icon, accent);
+  $("#dr-name").textContent = n.label;
+  $("#dr-sub").textContent = n.sub + " · " + (n.file ? n.file : n.kind.toUpperCase());
+
+  const zone = GRAPH.zones.find(z => z.id === n.zone) || {};
+  let html = "";
+  html += '<div class="dr-zone" style="color:' + (zone.color || "#94a3b8") + '"><span class="zsw" style="background:' + (zone.color || "#94a3b8") + '"></span>' + esc(zoneLabel(n.zone)) + "</div>";
+  html += '<div class="dr-label">What it does</div>';
+  html += '<div class="dr-role">' + esc(n.role) + "</div>";
+
+  if (n.facts && n.facts.length) {
+    html += '<div class="dr-label">Key facts</div><div class="dr-facts">';
+    n.facts.forEach(f => { html += '<div class="dr-fact"><span class="k">' + esc(f[0]) + '</span><span class="v">' + esc(f[1]) + "</span></div>"; });
+    html += "</div>";
+  }
+  if (n.endpoints && n.endpoints.length) {
+    html += '<div class="dr-label">Endpoints / interface</div><div class="dr-eps">';
+    n.endpoints.forEach(ep => { html += '<div class="dr-ep"><span class="m">' + esc(ep[0]) + '</span><span class="p">' + esc(ep[1]) + "</span></div>"; });
+    html += "</div>";
+  }
+
+  html += '<div class="dr-label">Live status</div>';
+  html += '<div class="dr-stats">' + buildStats(n, st) + "</div>";
+
+  if (n.kind === "module") {
+    html += '<div class="dr-label">Connected flows</div>';
+    html += '<div class="dr-facts">';
+    GRAPH.edges.filter(e => e.from === n.id || e.to === n.id).forEach(e => {
+      const other = e.from === n.id ? e.to : e.from;
+      const dir = e.from === n.id ? "→" : "←";
+      html += '<div class="dr-fact"><span class="k">' + dir + " " + esc(e.kind) + '</span><span class="v">' + esc(other) + " · " + esc(e.label) + "</span></div>";
+    });
+    html += "</div>";
+  }
+
+  if (n.file) {
+    html += '<button class="dr-open-file" id="dr-open-file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>Open source</button>';
+    html += '<div id="dr-fileview"></div>';
+  }
+
+  const body = $("#dr-body");
+  body.innerHTML = html;
+  body.scrollTop = 0;
+
+  const openBtn = $("#dr-open-file");
+  if (openBtn) openBtn.addEventListener("click", () => loadFile(n));
+}
+
+function openDrawer(n) {
+  STATE.activeNode = n;
+  $("#drawer").classList.add("open");
+  renderDrawer(n, STATE.status || { nodes: {}, files: {} });
+}
+
+function closeDrawer() {
+  $("#drawer").classList.remove("open");
+  STATE.activeNode = null;
+}
+$("#dr-close").addEventListener("click", closeDrawer);
+
+/* ---------------- file viewer ---------------- */
+
+const LANG_RULES = {
+  python: [
+    [/^\s*#.*$/, "cm"],
+    [/"""(?:[^"\\]|\\.)*?"""|'''(?:[^'\\]|\\.)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/, "st"],
+    [/\b(?:def|class|import|from|return|if|elif|else|for|while|try|except|finally|raise|with|as|pass|break|continue|lambda|global|nonlocal|None|True|False|and|or|not|in|is|del|assert|async|await|yield|self|print|len|range|sum|open|json|dict|list|set|str|int|float|bool)\b/, "kw"],
+    [/\b\d+(?:\.\d+)?\b/, "num"],
+    [/^\s*@\w+/, "de"],
+    [/\b[a-zA-Z_]\w*(?=\()/, "fn"]
+  ],
+  javascript: [
+    [/\/\/.*$/, "cm"],
+    [/\/\*[\s\S]*?\*\//, "cm"],
+    [/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/, "st"],
+    [/\b(?:const|let|var|function|return|if|else|for|while|switch|case|break|continue|new|class|extends|async|await|import|export|from|try|catch|finally|throw|typeof|instanceof|in|of|and|or|not|null|undefined|true|false|this|document|window|fetch)\b/, "kw"],
+    [/\b\d+(?:\.\d+)?\b/, "num"],
+    [/\b[a-zA-Z_$\w][\w$]*(?=\s*\()/, "fn"]
+  ],
+  json: [
+    [/"(?:[^"\\]|\\.)*"(?=\s*:)/, "kw2"],
+    [/"(?:[^"\\]|\\.)*"/, "st"],
+    [/\b-?\d+(?:\.\d+)?(?:e[+-]?\d+)?\b/, "num"],
+    [/\b(?:true|false|null)\b/, "kw"]
+  ],
+  html: [
+    [/<!--[\s\S]*?-->/, "cm"],
+    [/"<[^>]+>"|"[^"]*"|'[^']*'/, "st"],
+    [/<\/?[a-zA-Z][\w-]*|\/?>/, "kw"],
+    [/\b(?:class|id|href|src|style|onclick|data-[a-z-]+)\b/, "fn"]
+  ],
+  css: [
+    [/\/\*[\s\S]*?\*\//, "cm"],
+    [/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/, "num"],
+    [/"[^"]*"|'[^']*'/, "st"],
+    [/^[.#][\w-]+/, "fn"],
+    [/\b(?:color|background|margin|padding|border|display|flex|width|height|font|position|transform|animation|transition)\b/, "kw"]
+  ],
+  text: []
+};
+
+function highlight(code, lang) {
+  const rules = LANG_RULES[lang] || LANG_RULES.text;
+  const h = esc(code);
+  if (!rules.length) return h;
+  const parts = h.split("\n").map(line => {
+    let out = "";
+    let last = 0;
+    rules.forEach(r => {
+      const re = r[0];
+      re.lastIndex = 0;
+      let m;
+      const lines = [];
+      // apply rule line-wise
+    });
+    // simpler: process sequentially per rule with combined approach
+    return processLine(line, rules);
+  });
+  return parts.join("\n");
+}
+
+function processLine(line, rules) {
+  // apply rules sequentially (first match wins, advance)
+  let out = "";
+  let idx = 0;
+  const n = line.length;
+  while (idx < n) {
+    let best = null;
+    for (const r of rules) {
+      const re = new RegExp(r[0].source, r[0].flags);
+      re.lastIndex = idx;
+      const m = re.exec(line);
+      if (m && m.index === idx) { best = { m, cls: r[1] }; break; }
+    }
+    if (best) {
+      const m = best.m;
+      out += line.slice(idx, m.index) + '<span class="tok ' + best.cls + '">' + m[0] + "</span>";
+      idx = m.index + m[0].length || idx + 1;
+    } else {
+      out += line[idx];
+      idx++;
+    }
+  }
+  return out;
+}
+
+async function loadFile(n) {
+  const wrap = $("#dr-fileview");
+  wrap.innerHTML = '<div class="fileview"><div class="fv-body"><div class="fv-loading">Loading ' + esc(n.file) + "…</div></div></div>";
+  try {
+    const res = await fetch("/api/file?node=" + encodeURIComponent(n.id));
+    const data = await res.json();
+    if (data.error) {
+      wrap.innerHTML = '<div class="fileview"><div class="fv-body"><div class="fv-loading">' + esc(data.error) + "</div></div></div>";
+      return;
+    }
+    const lines = data.content.split("\n");
+    let html = "";
+    lines.forEach((line, i) => {
+      html += '<div class="fv-line"><span class="fv-num">' + (i + 1) + "</span><span class='fv-code'>" + highlight(line, data.lang) + "</span></div>";
+    });
+    if (data.truncated) html += '<div class="fv-loading">… truncated at 220 KB (showing first 220 KB)</div>';
+    wrap.innerHTML =
+      '<div class="fileview"><div class="fv-head">' +
+        '<span class="fn">' + esc(data.name) + "</span>" +
+        '<span class="fb">' + fmtSize(data.bytes) + " · " + esc(data.lang) + "</span>" +
+        '<button class="fclose" title="Close">✕</button></div>' +
+        '<div class="fv-body"><pre>' + html + "</pre></div></div>";
+    wrap.querySelector(".fclose").addEventListener("click", () => { wrap.innerHTML = ""; });
+    const body = $("#dr-body");
+    body.scrollTop = body.scrollHeight;
+  } catch (err) {
+    wrap.innerHTML = '<div class="fileview"><div class="fv-body"><div class="fv-loading">Failed to load file: ' + esc(String(err)) + "</div></div></div>";
+  }
+}
+
+/* ---------------- polling ---------------- */
+
+let statusTimer = null;
+let pollInterval = 3000;
+
+async function loadStatus() {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    if (!res.ok) throw new Error("http " + res.status);
+    const st = await res.json();
+    STATE.statusFails = 0;
+    $("#offline-banner").style.display = "none";
+    STATE.ageBaseAt = performance.now();
+    STATE.upBaseAt = performance.now();
+    if (STATE.status && STATE.status.files) {
+      // keep mtime anchors so flash detection survives poll gaps
+    }
+    applyStatus(st);
+    if (!statusTimer) { statusTimer = setInterval(loadStatus, pollInterval); }
+  } catch (err) {
+    STATE.statusFails++;
+    $("#offline-banner").style.display = "block";
+    if (STATE.statusFails > 2 && statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+  }
+}
+
+async function boot() {
+  try {
+    const gres = await fetch("/api/graph", { cache: "no-store" });
+    GRAPH = await gres.json();
+    GRAPH.nodes.forEach(n => { STATE.nodeById[n.id] = n; });
+    GRAPH.edges.forEach(e => {
+      e.color = STATE.nodeById[e.from].color;
+      STATE.edgeById[e.id] = e;
+    });
+    buildWorld();
+    $("#loading").style.display = "none";
+    requestAnimationFrame(loop);
+    loadStatus();
+    window.addEventListener("resize", fitView);
+  } catch (err) {
+    $("#loading-text").textContent = "Cannot reach monitor (" + err + "). Start with: python3 system_view/monitor.py";
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

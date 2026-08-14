@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Highcharts — 12 Gauges</title>
+<script src="vendor/highcharts.js"></script>
+<script src="vendor/highcharts-more.js"></script>
+<script src="vendor/solid-gauge.js"></script>
+<style>
+:root {
+  --bg: #eef3f8;
+  --panel: #ffffff;
+  --panel-alt: #f6f8fb;
+  --line: #d7dee8;
+  --text: #132033;
+  --muted: #56657a;
+  --accent: #1e5aa5;
+  --accent-soft: #e9f1fc;
+  --good: #1d6b4a;
+  --warn: #9a6700;
+  --danger: #b42318;
+  --radius: 14px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--text);padding:28px 24px}
+.container{max-width:1200px;margin:0 auto}
+h1{font-size:1.2rem;font-weight:700;margin-bottom:4px}
+.sub{color:var(--muted);font-size:.9rem;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px;box-shadow:0 4px 12px rgba(19,39,67,.04)}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.card-hd strong{font-size:.85rem;font-weight:700;color:var(--text)}
+.card-hd span{font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:2px 9px;border-radius:5px;background:var(--accent-soft);color:var(--accent)}
+.highcharts-container{width:100%!important}
+.highcharts-background,.highcharts-plot-background{fill:transparent!important}
+.highcharts-title{fill:var(--muted)!important;font-weight:400!important}
+.highcharts-axis-labels text{fill:var(--muted)!important}
+.highcharts-tick{stroke:var(--line)!important}
+.highcharts-minor-tick{stroke:var(--line)!important;stroke-opacity:.5!important}
+.highcharts-grid-line{stroke:var(--line)!important;stroke-opacity:.5!important}
+.highcharts-data-label text{fill:var(--text)!important}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Highcharts Gauges</h1>
+  <p class="sub">12 examples &middot; themed to the dashboard palette</p>
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+// ── card descriptors ──
+const cards = [
+  {t:'Default look',b:'STANDARD'},
+  {t:'Rounded ends',b:'CURVED'},
+  {t:'Thin ring',b:'RING'},
+  {t:'Semicircle',b:'SPEED'},
+  {t:'Custom pivot',b:'HOLLOW'},
+  {t:'Combo',b:'DUAL'},
+  {t:'Fuel level',b:'SOLID'},
+  {t:'Activity',b:'RING'},
+  {t:'KPI Overview',b:'MULTI'},
+  {t:'Rounded bands',b:'SEGMENTS'},
+  {t:'Threshold',b:'NEGATIVE'},
+  {t:'Custom dial',b:'DOT'}
+];
+
+// build containers
+const grid = document.getElementById('grid');
+cards.forEach((c,i)=>{
+  const id = 'g' + String(i+1).padStart(2,'0');
+  const div = document.createElement('div'); div.className = 'card';
+  div.innerHTML = `<div class="card-hd"><strong>${c.t}</strong><span>${c.b}</span></div><div id="${id}"></div>`;
+  grid.appendChild(div);
+});
+
+// ── 12 charts ──
+Highcharts.chart('g01',{
+ chart:{type:'gauge'},title:{text:'Default look'},
+ pane:{startAngle:-90,endAngle:90,background:null},
+ yAxis:{min:0,max:100,plotBands:[{from:0,to:50,color:varGet('--accent-soft')},{from:50,to:75,color:'#b3cce8'},{from:75,to:100,color:'#5b8db8'}]},
+ series:[{name:'Score',data:[68],tooltip:{valueSuffix:' / 100'}}],credits:{enabled:false}
+ });
+
+Highcharts.chart('g02',{
+ chart:{type:'gauge'},title:{text:'Rounded ends'},
+ pane:{startAngle:-90,endAngle:90,innerSize:'75%',borderRadius:'50%'},
+yAxis:{min:0,max:100,gridLineWidth:1,gridLineColor:varGet('--line'),tickWidth:0,minorTickWidth:0,plotBands:[{from:0,to:60,color:varGet('--good')},{from:60,to:80,color:varGet('--warn')},{from:80,to:100,color:varGet('--danger')}]},
+series:[{name:'Score',data:[72],tooltip:{valueSuffix:' / 100'},dial:{radius:'80%',backgroundColor:varGet('--accent'),baseWidth:'5%',topWidth:'1%',rearLength:'0%',borderRadius:'50%'},pivot:{radius:'5%',backgroundColor:varGet('--accent'),borderWidth:0}}],credits:{enabled:false}
+});
+
+Highcharts.chart('g03',{
+ chart:{type:'gauge'},title:{text:'Thin ring'},
+ pane:{startAngle:-90,endAngle:90,borderRadius:'50%',background:null,margin:20},
+yAxis:{labels:{distance:'20%'},lineWidth:1,min:0,max:100,offset:0,tickPosition:'outside',minorTickPosition:'outside',plotBands:[{from:0,to:70,color:'#c5d2e0',outerRadius:'90%',innerRadius:'80%'},{from:70,to:100,color:varGet('--accent'),outerRadius:'90%',innerRadius:'80%'}]},
+plotOptions:{gauge:{dial:{baseWidth:6}}},
+series:[{name:'Score',data:[45],tooltip:{valueSuffix:' / 100'}}],credits:{enabled:false}
+});
+
+Highcharts.chart('g04',{
+chart:{type:'gauge',height:'100%'},title:{text:'Semicircle'},
+pane:{startAngle:-90,endAngle:90,borderRadius:'50%'},
+yAxis:{min:0,max:200,labels:{distance:20},plotBands:[{from:0,to:120,color:varGet('--warn')},{from:120,to:160,color:'#c05a10'},{from:160,to:200,color:varGet('--danger')}]},
+series:[{name:'Speed',data:[110],tooltip:{valueSuffix:' km/h'},dataLabels:{format:'{y} km/h'},dial:{radius:'80%',baseWidth:'12%',topWidth:'1%',baseLength:'15%',rearLength:'0%',borderRadius:'4%',backgroundColor:varGet('--danger')},pivot:{radius:'5%',backgroundColor:varGet('--danger'),borderWidth:0}}],credits:{enabled:false}
+});
+
+Highcharts.chart('g05',{
+ chart:{type:'gauge'},title:{text:'Custom pivot'},
+ pane:{startAngle:-90,endAngle:90,innerSize:'70%',borderRadius:0},
+yAxis:{min:0,max:100,tickWidth:0,minorTickWidth:0,plotBands:[{from:0,to:60,color:varGet('--good')},{from:60,to:100,color:'#1e8a60'}]},
+plotOptions:{gauge:{dataLabels:{verticalAlign:'middle',y:0,zIndex:3,style:{color:varGet('--good'),textOutline:'none'}},dial:{radius:'60%',backgroundColor:varGet('--good'),baseLength:'70%',baseWidth:'60%',borderRadius:0,topWidth:0},pivot:{radius:'50%',borderWidth:5,borderColor:varGet('--good'),backgroundColor:varGet('--panel')}}},
+series:[{name:'Score',data:[78],tooltip:{valueSuffix:' / 100'}}],credits:{enabled:false}
+});
+
+Highcharts.chart('g06',{
+ chart:{height:'100%'},title:{text:'Combo'},
+ pane:{startAngle:-90,endAngle:90,borderRadius:'50%'},
+yAxis:{min:0,max:100,stops:[[.3,varGet('--good')],[.6,varGet('--accent')],[.9,'#6b4c9a']]},
+plotOptions:{gauge:{dial:{radius:'80%',baseWidth:'1%',topWidth:'1%',rearLength:0,borderRadius:0,backgroundColor:varGet('--muted')}}},
+series:[{type:'solidgauge',name:'Target',data:[60],dataLabels:{enabled:false}},{type:'gauge',name:'Actual',data:[74]}],credits:{enabled:false}
+});
+
+Highcharts.chart('g07',{
+chart:{type:'solidgauge',height:'80%'},title:{text:'Fuel level'},
+pane:{startAngle:-90,endAngle:90,innerSize:'60%'},tooltip:{enabled:false},
+yAxis:{min:0,max:100,stops:[[.1,varGet('--danger')],[.5,varGet('--warn')],[.9,varGet('--good')]],tickAmount:2,title:{text:'Fuel',y:-60}},
+plotOptions:{solidgauge:{dataLabels:{format:'{y}%',style:{fontSize:'1.3em',fontWeight:'700'},y:-8}}},
+series:[{name:'Fuel',data:[64]}],credits:{enabled:false}
+});
+
+Highcharts.chart('g08',{
+ chart:{type:'solidgauge',height:'100%'},title:{text:'Activity'},
+ pane:{startAngle:-90,endAngle:90,innerSize:'75%',margin:0},tooltip:{enabled:false},
+yAxis:{min:0,max:100,lineWidth:0,tickPositions:[]},
+series:[{name:'Steps',data:[{color:{linearGradient:{x1:0,y1:0,x2:1,y2:0},stops:[[0,varGet('--accent')],[1,'#6b4c9a']]},y:79}],dataLabels:{format:'{y}%<br><span style="font-size:.8em;color:'+varGet('--muted')+'">steps</span>'},rounded:true}],credits:{enabled:false}
+});
+
+Highcharts.chart('g09',{
+ chart:{type:'solidgauge',height:'100%'},title:{text:'KPI Overview'},
+ tooltip:{backgroundColor:'none',borderWidth:0,shadow:false,pointFormat:'<span style="color:{point.color};font-weight:bold">{series.name}: {point.y}%</span>'},
+ pane:{startAngle:-90,endAngle:90,margin:0,background:[{outerRadius:'100%',innerRadius:'78%',backgroundColor:'rgba(30,90,165,.15)',borderWidth:0},{outerRadius:'77%',innerRadius:'56%',backgroundColor:'rgba(180,35,24,.15)',borderWidth:0},{outerRadius:'55%',innerRadius:'34%',backgroundColor:'rgba(29,107,74,.15)',borderWidth:0}]},
+yAxis:{min:0,max:100,lineWidth:0,tickPositions:[]},
+plotOptions:{solidgauge:{dataLabels:{enabled:false},linecap:'round',rounded:true}},
+series:[{name:'Conversion',data:[{color:varGet('--accent'),radius:'100%',innerRadius:'78%',y:82}]},{name:'Engagement',data:[{color:varGet('--danger'),radius:'77%',innerRadius:'56%',y:59}]},{name:'Retention',data:[{color:varGet('--good'),radius:'55%',innerRadius:'34%',y:71}]}],credits:{enabled:false}
+});
+
+Highcharts.chart('g10',{
+ chart:{type:'gauge'},title:{text:'Rounded bands'},
+ pane:{startAngle:-90,endAngle:90,background:null,borderRadius:'25%'},
+yAxis:{min:0,max:100,plotBands:[{from:0,to:50,color:'#d0dae8',borderWidth:1,borderColor:varGet('--panel'),borderRadius:{radius:5,scope:'individual',where:'all'}},{from:50,to:75,color:varGet('--accent'),borderWidth:1,borderColor:varGet('--panel'),borderRadius:{radius:5,scope:'individual',where:'all'}},{from:75,to:100,color:'#6b4c9a',borderWidth:1,borderColor:varGet('--panel'),borderRadius:{radius:5,scope:'individual',where:'all'}}]},
+series:[{name:'Value',data:[55],tooltip:{valueSuffix:' / 100'}}],credits:{enabled:false}
+});
+
+Highcharts.chart('g11',{
+ chart:{type:'solidgauge'},title:{text:'Threshold'},
+ pane:{startAngle:-90,endAngle:90,borderRadius:0,innerSize:'80%'},tooltip:{enabled:false},
+yAxis:{min:-4,max:4,tickAmount:2,stops:[[.4999,varGet('--danger')],[.5,varGet('--good')]],title:{text:'Loss/Gain',y:20},plotLines:[{value:0,color:varGet('--muted'),width:2,zIndex:5}]},
+series:[{name:'Loss/Gain',data:[-1.2],threshold:0,dataLabels:{style:{fontSize:'1.1em',fontWeight:'700'}},tooltip:{valueSuffix:' %'}}],credits:{enabled:false}
+});
+
+Highcharts.chart('g12',{
+ chart:{type:'gauge'},title:{text:'Custom dial'},
+ pane:{startAngle:-90,endAngle:90,innerSize:'75%',borderRadius:'50%',size:'85%'},
+yAxis:{min:0,max:100,tickWidth:0,minorTickWidth:0},
+series:[{type:'solidgauge',data:[75],enableMouseTracking:false},{name:'Value',data:[{className:'linked-to-primary',y:75}],tooltip:{valueSuffix:' / 100'},dial:{path:[['M',78,0],['a',6,6,0,1,1,12,12],['a',6,6,0,1,1,-12,-12]],backgroundColor:varGet('--panel'),borderColor:varGet('--accent'),borderWidth:5,radius:'100%'},pivot:{radius:0},dataLabels:{verticalAlign:'middle',y:0}}],credits:{enabled:false}
+});
+
+function varGet(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+
+// live update
+setInterval(()=>{Highcharts.charts.forEach(ch=>{if(!ch)return;ch.series.forEach(s=>{s.points.forEach(p=>{const{max=0,min=0}=p.series.yAxis;const nv=Math.round((p.y||0)+(Math.random()-.5)*(max-min)*.2);p.update(Math.max(min,Math.min(max,nv)),false);if(p.options.className==='linked-to-primary')p.update(ch.series[0].points[0].y,false)});});ch.redraw()})},2200);
+</script>
+</body>
+</html>

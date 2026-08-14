@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Speedometer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:transparent;
+    --c1:#3ee8ff;
+    --c2:#2f6bff;
+    --dim:#000000;
+    --text:#0e0e0ea0;
+    --text-dim:#4a7d8a;
+    --zoneA:#70484e;
+    --zoneB:#ffffff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{
+    height:100%;
+    background:var(--bg);
+    font-family:'JetBrains Mono',monospace;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .stage{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:26px;
+    padding:40px;
+  }
+  .gauge{
+    position:relative;
+    width:420px;
+    height:420px;
+  }
+  svg{ width:100%; height:100%; overflow:visible; }
+  .core{
+    position:absolute;
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    width:190px; height:190px;
+    border-radius:50%;
+    background:
+      radial-gradient(circle closest-side at 50% 50%,
+        transparent 0%,
+        transparent 90%,
+        color-mix(in srgb, var(--zoneB) 25%, transparent) 44%,
+        color-mix(in srgb, var(--zoneB) 40%, transparent) 84%,
+        color-mix(in srgb, var(--zoneB) 55%, transparent) 30%,
+        var(--zoneB) 100%
+      );
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+  }
+  .core::before{
+    content:"";
+    position:absolute;
+    inset:-6px;
+    border-radius:50%;
+    padding:6px;
+    background:linear-gradient(180deg, var(--zoneB) 0%, var(--zoneA) 30%, var(--zoneB) 100%);
+    -webkit-mask:
+      linear-gradient(#ffffff 0 0) content-box,
+      linear-gradient(#ffffff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events:none;
+  }
+  .core .val{
+    font-size:56px;
+    font-weight:700;
+    color:var(--text);
+    letter-spacing:-1px;
+    font-variant-numeric:tabular-nums;
+  }
+  .core .unit{
+    margin-top:2px;
+    font-size:13px;
+    color:var(--text-dim);
+    letter-spacing:1px;
+  }
+  .controls{
+    width:380px;
+    display:flex;
+    align-items:center;
+    gap:14px;
+  }
+  .controls label{
+    font-size:11px;
+    letter-spacing:2px;
+    color:var(--text-dim);
+  }
+  input[type="range"]{
+    -webkit-appearance:none;
+    flex:1;
+    height:2px;
+    background:var(--dim);
+    border-radius:2px;
+    outline:none;
+  }
+  input[type="range"]::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    width:14px; height:14px;
+    border-radius:50%;
+    background:var(--c1);
+    box-shadow:0 0 10px var(--c1);
+    cursor:pointer;
+    margin-top:-6px;
+  }
+  input[type="range"]::-webkit-slider-runnable-track{
+    height:2px;
+    background:var(--dim);
+    border-radius:2px;
+  }
+  .tag{
+    font-size:12px;
+    color:var(--text-dim);
+    width:34px;
+    text-align:right;
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="gauge">
+    <svg viewBox="0 0 420 420">
+      <defs>
+        <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="2.4" result="b"/>
+          <feMerge>
+            <feMergeNode in="b"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+        <radialGradient id="ringDepth" cx="50%" cy="38%" r="65%">
+          <stop offset="0%" stop-color="#ffffff"/>
+          <stop offset="55%" stop-color="#ffffff"/>
+          <stop offset="100%" stop-color="transparent"/>
+        </radialGradient>
+        <radialGradient id="ringSheen" cx="35%" cy="25%" r="70%">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
+          <stop offset="35%" stop-color="#ffffff" stop-opacity="0.02"/>
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <circle cx="210" cy="210" r="198" fill="url(#ringDepth)"/>
+      <circle cx="210" cy="210" r="198" fill="url(#ringSheen)"/>
+      <circle cx="210" cy="210" r="196" fill="none" stroke="#ffffff" stroke-width="1.5"/>
+      <g id="cells"></g>
+      <path id="rimTrack" fill="none" stroke="#6f8790" stroke-width="2"/>
+      <path id="rimFg" fill="none" stroke="var(--zoneA)" stroke-width="2" filter="url(#glow)"/>
+      <line id="capStart" stroke="#6f8790" stroke-width="2" filter="url(#glow)"/>
+      <line id="capEnd" stroke="#6f8790" stroke-width="2" filter="url(#glow)"/>
+    </svg>
+    <div class="core">
+      <div class="val" id="speedVal">70</div>
+    </div>
+  </div>
+
+
+  <div class="controls">
+    <label>SPEED</label>
+    <input type="range" id="speedSlider" min="60" max="100" step="1" value="70">
+    <span class="tag" id="speedTag">70</span>
+  </div>
+</div>
+
+<script>
+(function(){
+  const cx = 210, cy = 210;
+  const rInner = 122, rOuter = 178;
+  const startA = -125, endA = 125;
+  const minV = 60;
+  const maxV = 100;
+  // ===== Gradient Controls =====
+
+  // Column (left → right)
+  const COLUMN_GRADIENT_START = 0.00;   // 0 = first column
+  const COLUMN_GRADIENT_END   = 1.00;   // 1 = last column
+
+  // Row (inner → outer)
+  const ROW_GRADIENT_START = 0.00;      // 0 = inner ring
+  const ROW_GRADIENT_END   = 0.00;      // 1 = outer ring
+  const COLUMN_GRADIENT_STRENGTH = 1;
+
+  // Gradient curve
+  const COLUMN_CURVE = 1.0;
+  const ROW_CURVE = 1.6;
+  const ns = 'http://www.w3.org/2000/svg';
+
+  function toRad(deg){ return (deg - 90) * Math.PI / 180; }
+  function polar(angleDeg, radius){
+    const rad = toRad(angleDeg);
+    return [cx + radius * Math.cos(rad), cy + radius * Math.sin(rad)];
+  }
+  function arcPath(a1, a2, radius){
+    const [x1,y1] = polar(a1, radius);
+    const [x2,y2] = polar(a2, radius);
+    const large = (a2 - a1) <= 180 ? 0 : 1;
+    return `M ${x1} ${y1} A ${radius} ${radius} 0 ${large} 1 ${x2} ${y2}`;
+  }
+  function valueToAngle(v){ return startA + ((v - minV) / (maxV - minV)) * (endA - startA); }
+
+  document.getElementById('rimTrack').setAttribute('d', arcPath(startA, endA, rOuter + 12));
+
+  const [capStartX0, capStartY0] = polar(startA, rInner);
+  const [capStartX1, capStartY1] = polar(startA, rOuter + 12);
+  const capStartEl = document.getElementById('capStart');
+  capStartEl.setAttribute('x1', capStartX0);
+  capStartEl.setAttribute('y1', capStartY0);
+  capStartEl.setAttribute('x2', capStartX1);
+  capStartEl.setAttribute('y2', capStartY1);
+
+  const [capEndX0, capEndY0] = polar(endA, rInner);
+  const [capEndX1, capEndY1] = polar(endA, rOuter + 12);
+  const capEndEl = document.getElementById('capEnd');
+  capEndEl.setAttribute('x1', capEndX0);
+  capEndEl.setAttribute('y1', capEndY0);
+  capEndEl.setAttribute('x2', capEndX1);
+  capEndEl.setAttribute('y2', capEndY1);
+
+  const cellsG = document.getElementById('cells');
+  const totalAngle = endA - startA;
+  const angleStep = 6.25;
+  const ringSteps = 7;
+  const cellData = [];
+  const gapDeg = 0.7;
+  const gapR = 2.5;
+  const ringPitch = (rOuter - rInner) / ringSteps;
+
+  for (let a = startA; a < endA; a += angleStep){
+    const a0 = a + gapDeg / 2;
+    const a1 = a + angleStep - gapDeg / 2;
+    for (let ring = 0; ring < ringSteps; ring++){
+      const r0 = rInner + ring * ringPitch + gapR / 2;
+      const r1 = rInner + (ring + 1) * ringPitch - gapR / 2;
+
+      const [x00, y00] = polar(a0, r0);
+      const [x01, y01] = polar(a1, r0);
+      const [x11, y11] = polar(a1, r1);
+      const [x10, y10] = polar(a0, r1);
+
+      const poly = document.createElementNS(ns, 'path');
+      poly.setAttribute('d', `M ${x00} ${y00} L ${x01} ${y01} L ${x11} ${y11} L ${x10} ${y10} Z`);
+      poly.setAttribute('fill', '#6f8790');
+      cellsG.appendChild(poly);
+      const midA = a + angleStep / 2;
+      const midR = (r0 + r1) / 2;
+      const ringT = ring / (ringSteps - 1);
+      cellData.push({ el: poly, angle: a, ringT: ringT });
+    }
+  }
+
+  const speedVal = document.getElementById('speedVal');
+  const speedTag = document.getElementById('speedTag');
+  const slider = document.getElementById('speedSlider');
+  const rimFg = document.getElementById('rimFg');
+
+  let current = 70, target = 70, raf = null;
+
+  const zones = [
+    { min: 60, max: 70,  c0: [70, 72, 78],    c1: [15, 15, 18] },    // grey -> black
+    { min: 70, max: 80,  c0: [255, 140, 190], c1: [60, 15, 90] },    // pink -> dark purple
+    { min: 80, max: 90,  c0: [230, 55, 60],   c1: [90, 15, 35] },    // red -> burgundy
+    { min: 90, max: 95,  c0: [255, 225, 70],  c1: [120, 55, 10] },  // yellow -> dark orange
+    { min: 95, max: 100, c0: [150, 235, 120], c1: [15, 90, 40] }     // light green -> dark green
+  ];
+  function zoneFor(v){
+    for (const z of zones){
+      if (v <= z.max) return z;
+    }
+    return zones[zones.length - 1];
+  }
+  function lerp(a, b, t){ return a + (b - a) * t; }
+  // aggressive split: sharpen the midpoint transition instead of a linear blend
+  function easeSplit(t){
+    return t < 0.5
+      ? 2 * t * t
+      : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function colorAt(t, zone){
+    t = Math.max(0, Math.min(1, t));
+    const e = easeSplit(1 - t * COLUMN_GRADIENT_STRENGTH);    return [
+      lerp(zone.c0[0], zone.c1[0], e),
+      lerp(zone.c0[1], zone.c1[1], e),
+      lerp(zone.c0[2], zone.c1[2], e)
+    ];
+  }
+
+  function lightFactor(ringT){
+    return Math.pow(
+        Math.max(0, Math.min(1,
+            (ringT - ROW_GRADIENT_START) /
+            (ROW_GRADIENT_END - ROW_GRADIENT_START)
+        )),
+        ROW_CURVE
+    );
+  }
+  function shade(rgb, factor){
+    const [r, g, b] = rgb;
+    const curved = Math.pow(factor, 1.6);
+    const floor = 0.28;
+    const eased = floor + curved * (1 - floor);
+    const darkR = 18, darkG = 34, darkB = 40;
+    return `rgb(${Math.round(lerp(darkR, r, eased))},${Math.round(lerp(darkG, g, eased))},${Math.round(lerp(darkB, b, eased))})`;
+  }
+
+  const coreEl = document.querySelector('.core');
+  const root = document.documentElement;
+
+  function render(v){
+    const a = valueToAngle(v);
+
+    const zone = zoneFor(v);
+    const zoneRangeT = (v - zone.min) / (zone.max - zone.min || 1);
+
+    cellData.forEach(c => {
+      if (c.angle <= a){
+       const rawT = (c.angle - startA) / totalAngle;
+        const t = Math.pow(
+            Math.max(0, Math.min(1,
+                (rawT - COLUMN_GRADIENT_START) /
+                (COLUMN_GRADIENT_END - COLUMN_GRADIENT_START)
+            )),
+            COLUMN_CURVE
+        );
+        const base = colorAt(t, zone);
+        const f = lightFactor(c.ringT +.2);
+        c.el.setAttribute('fill', shade(base, f));
+        c.el.setAttribute('filter', 'url(#glow)');
+        } else {
+          c.el.setAttribute('fill', '#6f8790');
+        c.el.removeAttribute('filter');
+      }
+    });
+
+    // snap the rim's leading edge to the far edge of the last active column
+    const activeSteps = Math.floor((a - startA) / angleStep);
+    const rimEdge = activeSteps >= 0 ? Math.min(endA, startA + (activeSteps + 1) * angleStep) : startA;
+    rimFg.setAttribute('d', arcPath(startA, rimEdge, rOuter + 12));
+
+    const c0css = `rgb(${Math.round(zone.c0[0])},${Math.round(zone.c0[1])},${Math.round(zone.c0[2])})`;
+    const c1css = `rgb(${Math.round(zone.c1[0])},${Math.round(zone.c1[1])},${Math.round(zone.c1[2])})`;
+    root.style.setProperty('--zoneA', c0css);
+    root.style.setProperty('--zoneB', c1css);
+    coreEl.style.boxShadow = `0 0 24px 4px rgba(${Math.round(zone.c0[0])},${Math.round(zone.c0[1])},${Math.round(zone.c0[2])},0.5)`;
+
+    speedVal.textContent = Math.round(v);
+  }
+
+  function animate(){
+    current += (target - current) * 0.12;
+    if (Math.abs(target - current) < 0.15) current = target;
+    render(current);
+    if (current !== target) raf = requestAnimationFrame(animate);
+    else raf = null;
+  }
+
+  function setTarget(v){
+    target = Math.max(minV, Math.min(maxV, v));
+    speedTag.textContent = Math.round(target);
+    if (!raf) raf = requestAnimationFrame(animate);
+  }
+
+  slider.addEventListener('input', e => setTarget(+e.target.value));
+
+  render(70);
+})();
+</script>
+
+</body>
+</html>

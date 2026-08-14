@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gauge — Live Bands</title>
+<script src="vendor/highcharts.js"></script>
+<script src="vendor/highcharts-more.js"></script>
+<style>
+:root {
+  --bg: #eef3f8; --panel: #ffffff; --panel-alt: #f6f8fb;
+  --line: #d7dee8; --text: #132033; --muted: #56657a;
+  --accent: #1e5aa5; --accent-soft: #e9f1fc;
+  --good: #1d6b4a; --warn: #9a6700; --danger: #b42318;
+  --radius: 14px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:28px;box-shadow:0 4px 12px rgba(19,39,67,.04);max-width:620px;width:100%}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px}
+.card-hd strong{font-size:1rem;font-weight:700}
+.card-hd span{font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:2px 9px;border-radius:5px;background:var(--accent-soft);color:var(--accent)}
+.sub{color:var(--muted);font-size:.82rem;margin-bottom:12px}
+.highcharts-background,.highcharts-plot-background{fill:transparent!important}
+.highcharts-title{fill:var(--muted)!important;font-weight:400!important}
+.highcharts-axis-labels text{fill:var(--muted)!important}
+.highcharts-tick{stroke:var(--line)!important}
+.highcharts-grid-line{stroke:var(--line)!important;stroke-opacity:.5!important}
+.slider-row{display:flex;align-items:center;gap:14px;margin-top:6px}
+.slider-row input{flex:1;accent-color:var(--accent);height:6px;cursor:pointer}
+.slider-row output{font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums;min-width:4ch;color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="card-hd"><strong>Default look</strong><span>LIVE BANDS</span></div>
+  <p class="sub">segments converge at the needle</p>
+  <div id="gauge"></div>
+  <div class="slider-row">
+    <output id="val">85</output>
+    <input type="range" min="70" max="100" value="85" id="slider">
+  </div>
+</div>
+
+<script>
+function varGet(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+
+const chart = Highcharts.chart('gauge', {
+  chart:{type:'gauge'},
+  title:{text:null},
+  pane:{startAngle:-90,endAngle:90,background:null},
+  yAxis:{min:70,max:100,tickPixelInterval:30,plotBands:[]},
+  series:[{
+    name:'Score',data:[85],
+    tooltip:{valueSuffix:' / 100'},
+    dial:{radius:'85%',backgroundColor:varGet('--accent'),baseWidth:4,topWidth:1,rearLength:'0%'},
+    pivot:{radius:5,backgroundColor:varGet('--accent'),borderWidth:0},
+    dataLabels:{format:'<b>{y}</b>',style:{fontSize:'2.2rem'},borderWidth:0,backgroundColor:'none',y:-10,verticalAlign:'middle'}
+  }],
+  credits:{enabled:false}
+});
+
+function updateBands(val){
+  const min=70, max=100, span=val-min, t=span/3;
+  chart.yAxis[0].update({plotBands:[
+    {from:min,to:min+t,color:varGet('--danger')},
+    {from:min+t,to:min+2*t,color:varGet('--warn')},
+    {from:min+2*t,to:val,color:varGet('--good')},
+    {from:val,to:max,color:varGet('--accent-soft')}
+  ]});
+}
+
+const slider=document.getElementById('slider');
+const out=document.getElementById('val');
+slider.addEventListener('input',()=>{
+  const v=+slider.value; out.textContent=v;
+  chart.series[0].points[0].update(v,false);
+  updateBands(v);
+  chart.redraw();
+});
+updateBands(85);
+</script>
+</body>
+</html>

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grades Dashboard 2.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=19">
+</head>
+<body>
+    <div class="app">
+        <div class="appbar">
+            <div class="appbar-start">
+                <button id="mobileMenuBtn" class="mobile-menu-btn" type="button" aria-label="Open menu" aria-expanded="false">
+                    <span class="hamburger" aria-hidden="true"></span>
+                </button>
+                <div class="appbar-title">Grades Dashboard 2.0</div>
+            </div>
+            <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle theme" title="Toggle dark/light theme">
+                <span class="theme-toggle-icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="14" height="14">
+                      <svg class="sun" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="4" />
+                        <g>
+                          <line x1="12" y1="8" x2="12" y2="4" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(45 12 12)" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(90 12 12)" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(135 12 12)" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(180 12 12)" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(225 12 12)" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(270 12 12)" />
+                          <line x1="12" y1="8" x2="12" y2="4" transform="rotate(315 12 12)" />
+                        </g>
+                      </svg>
+                      
+                                            <path class="moon" d="M12.5 8.5A5 5 0 017.5 3a5 5 0 105 5.5z" fill="currentColor" opacity="0"/>
+                    </svg>
+                </span>
+            </button>
+        </div>
+
+        <div class="layout">
+            <main class="content">
+                <section id="dashboard" class="section active">
+                    <div class="section-head">
+                        <div>
+                            <h2>Dashboard</h2>
+                        </div>
+                    </div>
+                    <div class="dashboard-meta">
+                        <span class="chip" id="metaYear"></span>
+                        <span class="chip" id="metaTerm"></span>
+                        <span class="chip" id="metaThreshold"></span>
+                        <span class="chip" id="metaUpdated"></span>
+                    </div>
+                    <div class="stats-row">
+                        <div class="gauge-card" id="quarterGauge"></div>
+                        <div class="gauge-card" id="yearGauge"></div>
+                    </div>
+                    <div class="grid-2" style="margin-top:12px;">
+                        <div class="panel">
+                            <h3>Attention preview</h3>
+                            <div class="list" id="dashboardAttentionPreview"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="analytics" class="section">
+                    <div class="section-head">
+                        <div>
+                            <h2>Analytics</h2>
+                            <p></p>
+                        </div>
+                    </div>
+                    <div class="analytics-tabs">
+                        <button class="subtab active" data-view="yearly">Yearly</button>
+                        <button class="subtab" data-view="quarterly">Quarterly</button>
+                        <button class="subtab" data-view="classview">Class</button>
+                    </div>
+
+                    <div id="view-yearly" class="analytics-view active">
+                        <div class="analytics-grid">
+                            <div class="panel">
+                                <h3>Year timeline by due date</h3>
+                                <div class="chart-wrap">
+                                    <canvas id="yearTimelineChart">
+                                    </canvas>
+                                </div>
+                            </div>
+                            <div class="panel year-gauge">
+                                <h3>Year hover gauge</h3>
+                                <div id="yearHoverGauge"></div>
+                                <div class="gauge-context" id="yearGaugeContext">Hover the year timeline to preview the selected period. Leave the graph to return to the current year average.</div>
+                            </div>
+                        </div>
+                        <div class="analytics-grid bottom">
+                            <div class="panel">
+                                <h3>Quarter summary</h3>
+                                <div class="chart-wrap">
+                                    <canvas id="quarterSummaryChart">
+                                    </canvas>
+                                </div>
+                            </div>
+                            <div class="panel">
+                                <h3>Yearly notes</h3>
+                                <div class="list" id="yearlyNotes"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="view-quarterly" class="analytics-view">
+                        <div class="quarter-nav" id="quarterNav"></div>
+                        <div class="grid-2">
+                            <div class="panel">
+                                <h3>Quarter running average by due date</h3>
+                                <div class="chart-wrap">
+                                    <canvas id="quarterTimelineChart">
+                                    </canvas>
+                                </div>
+                            </div>
+                            <div class="panel">
+                                <h3>Quarter class averages</h3>
+                                <div class="chart-wrap tall">
+                                    <canvas id="classAverageChart">
+                                    </canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid-3" style="margin-top:12px;">
+                            <div class="panel">
+                                <h3>Classes needing attention</h3>
+                                <div class="list" id="attentionClassesList"></div>
+                            </div>
+                            <div class="panel">
+                                <h3>Categories needing attention</h3>
+                                <div class="list" id="attentionCategoriesList"></div>
+                            </div>
+                            <div class="panel">
+                                <h3>Strongest classes</h3>
+                                <div class="list" id="strongClassesList"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="view-classview" class="analytics-view">
+                        <div class="panel class-analytics-panel" style="margin-bottom:12px;">
+                            <div class="class-controls" style="margin-bottom:0;">
+                                <div class="control-group">
+                                    <label for="analyticsClassSelect">Class</label>
+                                    <select id="analyticsClassSelect" class="control-select"></select>
+                                </div>
+                                <div class="control-group">
+                                    <label for="analyticsPeriodSelect">Period</label>
+                                    <select id="analyticsPeriodSelect" class="control-select">
+                                        <option value="1">Q1</option>
+                                        <option value="2">Q2</option>
+                                        <option value="3">Q3</option>
+                                        <option value="4">Q4</option>
+                                        <option value="year">Year</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label for="analyticsCategorySelect">Category</label>
+                                    <select id="analyticsCategorySelect" class="control-select"></select>
+                                </div>
+                            </div>
+                            <div id="classInsightPanel" class="class-insight" aria-live="polite"></div>
+                            <div class="click-note">Click a timeline point to see assignments due that day. Click a category bar to open it in Grades.</div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="panel">
+                                <h3>Selected class running average by due date</h3>
+                                <div class="chart-wrap">
+                                    <canvas id="classTimelineChart">
+                                    </canvas>
+                                </div>
+                            </div>
+                            <div class="panel">
+                                <h3>Selected class category averages</h3>
+                                <div class="chart-wrap">
+                                    <canvas id="classCategoryChart">
+                                    </canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="watchlist" class="section">
+                    <div class="section-head">
+                        <div>
+                            <h2>Watchlist</h2>
+                        </div>
+                    </div>
+                    <div class="watch-grid" id="watchlistGrid"></div>
+                </section>
+
+                <section id="grades" class="section">
+                    <div class="section-head">
+                        <div>
+                            <h2>Grades</h2>
+                            <p></p>
+                        </div>
+                    </div>
+                    <div class="grades-shell">
+                        <div class="panel">
+                            <div id="classDetail" class="empty">Select a class from the sidebar to inspect it.</div>
+                        </div>
+                    </div>
+                </section>
+            </main>
+
+            <aside class="sidebar" id="sidebar" role="tablist" aria-label="Dashboard sections">
+                <div class="sidebar-head">
+                    <div class="sidebar-title">Sections</div>
+                    <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true">
+                        <span class="sidebar-toggle-icon" aria-hidden="true">
+                            <svg viewBox="0 0 16 16" aria-hidden="true">
+                                <path class="stroke" d="M10.5 3.2 6 8l4.5 4.8"></path>
+                            </svg>
+                        </span>
+                        <span class="visually-hidden">Toggle sidebar</span>
+                    </button>
+                </div>
+                <div class="sidebar-nav">
+                    <button class="tab active" data-section="dashboard" type="button">
+                        <span class="tab-badge">
+                            <svg viewBox="0 0 16 16" aria-hidden="true">
+                                <rect class="stroke" x="2.3" y="2.3" width="11.4" height="11.4" rx="2.2"></rect>
+                                <path class="stroke" d="M5.2 9.6l2-2 1.6 1.6 2.2-2.2"></path>
+                            </svg>
+                        </span>
+                        <span class="tab-text">Dashboard</span>
+                    </button>
+                    <button class="tab" data-section="analytics" type="button">
+                        <span class="tab-badge">
+                            <svg viewBox="0 0 16 16" aria-hidden="true">
+                                <path class="stroke" d="M2.2 12.8h11.6"></path>
+                                <rect class="stroke" x="3" y="7.8" width="2.2" height="5"></rect>
+                                <rect class="stroke" x="6.9" y="5.1" width="2.2" height="7.7"></rect>
+                                <rect class="stroke" x="10.8" y="3.4" width="2.2" height="9.4"></rect>
+                            </svg>
+                        </span>
+                        <span class="tab-text">Analytics</span>
+                    </button>
+                    <button class="tab" data-section="watchlist" type="button">
+                        <span class="tab-badge">
+                            <svg viewBox="0 0 16 16" aria-hidden="true">
+                                <path class="stroke" d="M8 2.4l1.7 3.3 3.7.5-2.7 2.6.7 3.7L8 10.8 4.6 12.5l.7-3.7-2.7-2.6 3.7-.5z"></path>
+                            </svg>
+                        </span>
+                        <span class="tab-text">Watchlist</span>
+                    </button>
+                    <div style="position:relative;">
+                        <button class="tab" data-section="grades" type="button">
+                            <span class="tab-badge">
+                                <svg viewBox="0 0 16 16" aria-hidden="true">
+                                    <rect class="stroke" x="2.8" y="2.2" width="10.4" height="11.6" rx="1.8"></rect>
+                                    <path class="stroke" d="M5.1 5.4h5.8M5.1 8h5.8M5.1 10.6h4"></path>
+                                </svg>
+                            </span>
+                            <span class="tab-text" id="gradesTabText">Grades</span>
+                        </button>
+                        <div class="grades-search-wrap" id="gradesSearchWrap">
+                            <input id="gradesSearchInput" type="search" placeholder="Search classes..." autocomplete="off">
+                        </div>
+                        <div class="grades-dropdown" id="gradesDropdown">
+                            <div class="grades-class-list" id="gradesClassList"></div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+        <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+    </div>
+
+    <div id="timelinePointPopup" class="timeline-point-popup" hidden aria-live="polite"></div>
+
+    <script src="/static/js/dashboard.js?v=21"></script>
+    <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"e6873ae6c0cc4383b9f6e84e30c37d6e","r":1}' crossorigin="anonymous"></script>
+    <script>
+    (function() {
+        function c() {
+            var b = a.contentDocument || (a.contentWindow && a.contentWindow.document);
+            if (b) {
+                var d = b.createElement('script');
+                d.innerHTML = "window.__CF$cv$params={r:'a235a11f5b11e230',t:'MTc4NTQyNzc4Mw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";
+                b.getElementsByTagName('head')[0].appendChild(d)
+            }
+        }
+        if (document.body) {
+            var a = document.createElement('iframe');
+            a.height = 1;
+            a.width = 1;
+            a.style.position = 'absolute';
+            a.style.top = 0;
+            a.style.left = 0;
+            a.style.border = 'none';
+            a.style.visibility = 'hidden';
+            document.body.appendChild(a);
+            if ('loading' !== document.readyState)
+                c();
+            else if (window.addEventListener)
+                document.addEventListener('DOMContentLoaded', c);
+            else {
+                var e = document.onreadystatechange || function() {};
+                document.onreadystatechange = function(b) {
+                    e(b);
+                    'loading' !== document.readyState && (document.onreadystatechange = e, c())
+                }
+            }
+        }
+    })();
+    </script>
+</body>
+</html>

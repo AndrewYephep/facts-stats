@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Secrets — never commit
+.env
+.env.*
+.env.bak*
+
+# Runtime / generated data
+logs/
+data/
+grades_data.json
+grades_history.json
+classroom_latest.json
+
+# macOS junk
+.DS_Store
+._*
+
+# Backups
+*.bak*
+
+# Accidental files
+cat
