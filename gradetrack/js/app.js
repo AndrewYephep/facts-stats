@@ -12,7 +12,7 @@ const state = {
   trendView: 'overall', trendActive: null,
   gradePeriod: null, assignmentsPeriod: null,
   settingsOpen: false,
-  settingsTab: 'classes',
+  settingsView: 'home',
   goal: 90,
   perClassGoals: {},
   classAliases: {},
@@ -24,15 +24,21 @@ const state = {
   assignmentsClassId: null,
   aiInsights: null,
   calendarSelectedDate: null,
+  calendarMode: 'assignments',   // 'assignments' | 'notequiz'
+  noteQuizCalendar: null,        // {year, month, days: [...]}
   trendShowOverall: true,
   theme: 'dark',
   autoRefreshMinutes: 5,
   quizDelay: 3,
   levelsEnabled: false,
   autoScrape: { enabled: false, times: '07:00', period: 'all', classes: 'all' },
+  noteQuiz: { classes: {} },
+  noteQuizMenuOpen: null,
+  availableYears: [],
   userName: '',
   userPosition: '',
   profilePicture: '',
+  profileLoaded: false,
   scrapeLog: { running: false, exitCode: null, logs: [] },
   aiConversation: [],
   aiChat: [],
@@ -40,6 +46,7 @@ const state = {
   aiDraft: '',
   calendarDetailId: null,
   calendarDetailEditing: false,
+  calendarEventDetailId: null,
   todoFormOpen: false,
   todoForm: {},
   openItemMenu: null,
@@ -51,8 +58,11 @@ const state = {
   openQuestions: {},
   blooketClasses: [],
   blooketCustomSets: [],
+  noteQuizToday: {},            // {classId: [note quiz sets generated today]}
   reviewQuery: '',
   expandedClasses: {},
+  expandedCategories: {},        // {classId__category: true} — expanded assignment category
+  chapterIndex: {},             // {classId: index} — selected chapter per class card
   quizActive: false,
   trilium: { url: '', token: '', connected: false, notes: {}, cache: {} },
   renderedOnce: false,
@@ -343,7 +353,10 @@ const ICONS = {
   pencil:'<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
   paperclip:'<path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
   send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-  checkCircle:'<path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+  download:'<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  refresh:'<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  checkCircle:'<path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  trilium:'<g transform="translate(2.4,0) scale(0.0875)"><path d="m202.9 112.7c-22.5 16.1-54.5 12.8-74.9 6.3l14.8-11.8 14.1-11.3 49.1-39.3-51.2 35.9-14.3 10-14.9 10.5c0.7-21.2 7-49.9 28.6-65.4 1.8-1.3 3.9-2.6 6.1-3.8 2.7-1.5 5.7-2.9 8.8-4.1 27.1-11.1 68.5-15.3 85.2-9.5 0.1 16.2-15.9 45.4-33.9 65.9-2.4 2.8-4.9 5.4-7.4 7.8-3.4 3.5-6.8 6.4-10.1 8.8z" fill="currentColor" opacity="0.55"/><path d="m213.1 104c-22.2 12.6-51.4 9.3-70.3 3.2l14.1-11.3 49.1-39.3-51.2 35.9-14.3 10c0.5-18.1 4.9-42.1 19.7-58.6 2.7-1.5 5.7-2.9 8.8-4.1 27.1-11.1 68.5-15.3 85.2-9.5 0.1 16.2-15.9 45.4-33.9 65.9-2.3 2.8-4.8 5.4-7.2 7.8z" fill="currentColor" opacity="0.75"/><path d="m220.5 96.2c-21.1 8.6-46.6 5.3-63.7-0.2l49.2-39.4-51.2 35.9c0.3-15.8 3.5-36.6 14.3-52.8 27.1-11.1 68.5-15.3 85.2-9.5 0.1 16.2-15.9 45.4-33.8 66z" fill="currentColor"/><path d="m106.7 179c-5.8-21 5.2-43.8 15.5-57.2l4.8 14.2 4.5 13.4 15.9 47-12.8-47.6-3.6-13.2-3.7-13.9c15.5 6.2 35.1 18.6 40.7 38.8 0.5 1.7 0.9 3.6 1.2 5.5 0.4 2.4 0.6 5 0.7 7.7 0.9 23.1-7.1 54.9-15.9 65.7-12-4.3-29.3-24-39.7-42.8-1.4-2.6-2.7-5.1-3.8-7.6-1.6-3.5-2.9-6.8-3.8-10z" fill="currentColor" opacity="0.55"/><path d="m110.4 188.9c-3.4-19.8 6.9-40.5 16.6-52.9l4.5 13.4 15.9 47-12.8-47.6-3.6-13.2c13.3 5.2 29.9 15 38.1 30.4 0.4 2.4 0.6 5 0.7 7.7 0.9 23.1-7.1 54.9-15.9 65.7-12-4.3-29.3-24-39.7-42.8-1.4-2.6-2.7-5.2-3.8-7.7z" fill="currentColor" opacity="0.75"/><path d="m114.2 196.5c-0.7-18 8.6-35.9 17.3-47.1l15.9 47-12.8-47.6c11.6 4.4 26.1 12.4 35.2 24.8 0.9 23.1-7.1 54.9-15.9 65.7-12-4.3-29.3-24-39.7-42.8z" fill="currentColor"/><path d="m86.3 59.1c21.7 10.9 32.4 36.6 35.8 54.9l-15.2-6.6-14.5-6.3-50.6-22 48.8 24.9 13.6 6.9 14.3 7.3c-16.6 7.9-41.3 14.5-62.1 4.1-1.8-0.9-3.6-1.9-5.4-3.2-2.3-1.5-4.5-3.2-6.8-5.1-19.9-16.4-40.3-46.4-42.7-61.5 12.4-6.5 41.5-5.8 64.8-0.3 3.2 0.8 6.2 1.6 9.1 2.5 4 1.3 7.6 2.8 10.9 4.4z" fill="currentColor" opacity="0.55"/><path d="m75.4 54.8c18.9 12 28.4 35.6 31.6 52.6l-14.5-6.3-50.6-22 48.7 24.9 13.6 6.9c-14.1 6.8-34.5 13-53.3 8.2-2.3-1.5-4.5-3.2-6.8-5.1-19.8-16.4-40.2-46.4-42.6-61.5 12.4-6.5 41.5-5.8 64.8-0.3 3.1 0.8 6.2 1.6 9.1 2.6z" fill="currentColor" opacity="0.75"/><path d="m66.3 52.2c15.3 12.8 23.3 33.6 26.1 48.9l-50.6-22 48.8 24.9c-12.2 6-29.6 11.8-46.5 10-19.8-16.4-40.2-46.4-42.6-61.5 12.4-6.5 41.5-5.8 64.8-0.3z" fill="currentColor"/></g>'
 };
 
 function icon(name, cls = 'w-5 h-5') {
@@ -388,9 +401,18 @@ async function fetchComputed() {
     state.levelsEnabled = !!settings.levelsEnabled;
     state.autoScrape = settings.autoScrape || state.autoScrape || { enabled: false, times: '07:00', period: 'all', classes: 'all' };
     state.trilium = { connected: false, cache: {}, ...(settings.trilium || state.trilium || {}) };
+    state.email = settings.email || state.email || { recipients: [], subjectPrefix: 'Grades Update' };
+    state.noteQuiz = { classes: (settings.noteQuiz && settings.noteQuiz.classes) || {} };
+    state.prompts = (settings.prompts && typeof settings.prompts === 'object') ? settings.prompts : {};
+    state.displayYear = settings.displayYear || '';
+    state.availableYears = Array.isArray(settings.availableYears) ? settings.availableYears : (state.availableYears || []);
+    state.emailHtml = settings.emailHtml || state.emailHtml || '';
+    state.notifications = settings.notifications || state.notifications || { enabled: false, scrapeDone: true, blooketDone: true };
     state.userName = settings.userName || '';
     state.userPosition = settings.userPosition || '';
     state.profilePicture = settings.profilePicture || '';
+    state.profileLoaded = true;
+    if (typeof updateSidebarUserInfo === 'function') updateSidebarUserInfo();
     applyTheme(state.theme);
     scheduleAutoRefresh();
   } catch (err) {
@@ -450,6 +472,12 @@ async function saveSettings(settings) {
     state.levelsEnabled = !!settings.levelsEnabled;
     state.autoScrape = settings.autoScrape || state.autoScrape || { enabled: false, times: '07:00', period: 'all', classes: 'all' };
     state.trilium = { connected: false, cache: {}, ...(settings.trilium || state.trilium || {}) };
+    state.email = settings.email || state.email || { recipients: [], subjectPrefix: 'Grades Update' };
+    state.noteQuiz = { classes: (settings.noteQuiz && settings.noteQuiz.classes) || (state.noteQuiz && state.noteQuiz.classes) || {} };
+    state.prompts = (settings.prompts && typeof settings.prompts === 'object') ? settings.prompts : (state.prompts || {});
+    state.displayYear = settings.displayYear || '';
+    state.emailHtml = typeof settings.emailHtml === 'string' ? settings.emailHtml : (state.emailHtml || '');
+    state.notifications = settings.notifications || state.notifications || { enabled: false, scrapeDone: true, blooketDone: true };
     state.userName = settings.userName || '';
     state.userPosition = settings.userPosition || '';
     state.profilePicture = settings.profilePicture || '';
@@ -855,7 +883,7 @@ function runningAvgChart(dataPoints, height = 200, width = 600, color = '#3b82f6
     points: pts, pad, width, height, color,
     series: [{ label: opts.title || '', color, valuesByDate }],
     classIds: opts.classIds || [], periodKey: opts.periodKey || 'year',
-    title: opts.title || 'Assignments', fmt: fmtDateShort, lastIdx
+    title: opts.title || 'Grades', fmt: fmtDateShort, lastIdx
   };
 
   return `
@@ -951,7 +979,7 @@ function showDayTooltip(cid, i, activeSeries) {
   }
   const el = document.createElement('div');
   el.className = 'day-tip';
-  el.innerHTML = dayTooltipContent(pt.date, { classIds: d.classIds || [], periodKey: d.periodKey || 'year', title: d.title || 'Assignments', series: d.series, multiClass: d.multiClass, activeSeries });
+  el.innerHTML = dayTooltipContent(pt.date, { classIds: d.classIds || [], periodKey: d.periodKey || 'year',     title: d.title || 'Grades', series: d.series, multiClass: d.multiClass, activeSeries });
   document.body.appendChild(el);
   __dayTip = { el, cid, i, pt: anchorPt };
   window.addEventListener('scroll', onDayTipMove, true);
@@ -1135,7 +1163,7 @@ function renderOverview() {
           <div class="text-xs text-gray-500 mt-2">${activeClasses.length} classes · ${activeClasses.filter(c => c.isAcademic).length} academic</div>
         </div>
         <div class="bg-[#12121b] border border-[#22222e] rounded-2xl p-5">
-          <div class="text-xs text-gray-500 mb-1">Assignments at Goal</div>
+          <div class="text-xs text-gray-500 mb-1">Grades at Goal</div>
           <div class="text-3xl font-bold ${atGoalPct >= 80 ? 'text-green-400' : 'text-orange-400'}">${atGoalPct}%</div>
           <div class="text-xs text-gray-500 mt-2">${atGoalCount}/${qGraded.length} graded at/above ${goal}% this quarter</div>
         </div>
@@ -1155,7 +1183,7 @@ function renderOverview() {
 
     <!-- Recent Assignments (side card) -->
     <div class="bg-[#12121b] border border-[#22222e] rounded-2xl p-5">
-      <h3 class="text-sm font-medium text-gray-300 mb-4">Recent Assignments</h3>
+      <h3 class="text-sm font-medium text-gray-300 mb-4">Recent Grades</h3>
       ${allAssignments.length === 0
         ? '<div class="text-center text-gray-500 py-4 text-sm flex items-center justify-center gap-2"><span class="animate-spin inline-block w-4 h-4 border-2 border-gray-600 border-t-blue-400 rounded-full"></span> Loading recent assignments…</div>'
         : allAssignments.filter(a => a.pts != null).sort((a, b) => (b.dueDate || '').localeCompare(a.dueDate || '')).slice(0, 5).map(a => `
@@ -1204,7 +1232,7 @@ function renderOverview() {
         const color = classColorFor(c.id);
         const letter = escapeHtml((c.shortName || c.name).trim().charAt(0).toUpperCase());
         return `
-        <div onclick="showCourseDetail('${c.id}')" class="rounded-xl p-3 hover:border-blue-500/30 transition-all cursor-pointer border ${themeChoice('border-[#22222e]', 'border-[#d9dde7]')}" style="background:linear-gradient(90deg, ${color}1a, transparent 62%)">
+        <div onclick="showCourseDetail('${c.id}')" class="rounded-xl p-3 hover:brightness-125 transition-all cursor-pointer border ${themeChoice('border-[#22222e]', 'border-[#d9dde7]')}" style="background:linear-gradient(90deg, ${color}1a, transparent 62%)">
           <div class="flex items-center justify-between mb-1">
             <div class="flex items-center gap-2 min-w-0">
               <span class="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0" style="background:${color}24; color:${color}">${letter}</span>
@@ -1217,14 +1245,26 @@ function renderOverview() {
             ${trendArrow(c.trend)}
           </div>
           <div class="flex items-center gap-1.5 mt-2 pt-2 border-t ${themeChoice('border-[#22222e]', 'border-[#d9dde7]')}">
-            <button onclick="event.stopPropagation();gotoClassAssignments('${c.id}')" class="flex items-center gap-1 px-2 py-1 rounded-lg ${themeChoice('bg-[#12121b] border-[#22222e] text-gray-400 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-[10px] font-medium transition-colors" title="Jump to this class's assignments">${icon('clipboard','w-3 h-3')} Assignments</button>
+            <button onclick="event.stopPropagation();gotoClassAssignments('${c.id}')" class="flex items-center gap-1 px-2 py-1 rounded-lg ${themeChoice('bg-[#12121b] border-[#22222e] text-gray-400 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-[10px] font-medium transition-colors" title="Jump to this class's grades">${icon('clipboard','w-3 h-3')} Grades</button>
             <button onclick="event.stopPropagation();gotoClassTrends('${c.id}')" class="flex items-center gap-1 px-2 py-1 rounded-lg ${themeChoice('bg-[#12121b] border-[#22222e] text-gray-400 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-[10px] font-medium transition-colors" title="Jump to this class's report">${icon('trend','w-3 h-3')} Reports</button>
-            ${triliumNotesFor(c.id) ? triliumCardHtml(c.id, c.shortName || c.name, true) : ''}
+            ${triliumNotesFor(c.id) ? `<a href="${triliumWebUrl(triliumNotesFor(c.id).noteId)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="flex items-center gap-1 px-2 py-1 rounded-lg ${themeChoice('bg-[#12121b] border-[#22222e] text-gray-400 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-[10px] font-medium transition-colors" title="Open notes in Trilium">${icon('trilium','w-3 h-3')} ${escapeHtml(triliumNotesFor(c.id).noteTitle || 'Notes')}</a>` : ''}
           </div>
         </div>`;
       }).join('') : '<div class="col-span-full text-center text-gray-500 text-sm py-6 flex items-center justify-center gap-2"><span class="animate-spin inline-block w-4 h-4 border-2 border-gray-600 border-t-blue-400 rounded-full"></span> Loading classes…</div>'}
     </div>
-  </div>`;
+  </div>
+
+  <!-- Note quizzes widget -->
+  <div id="note-quiz-overview-widget"></div>
+  `;
+}
+
+// ─── Stubs for legacy references (defined elsewhere in older builds) ─────────
+function updateSettingsNav() {
+  // No-op: settings scroll-spy nav was removed; kept as a stub so init() doesn't error.
+}
+function filterReviewGrid() {
+  // No-op: review-grid filter is handled inside loadBlooketClasses / blooket-builder.js.
 }
 
 function showCourseDetail(classId) {
@@ -1251,7 +1291,7 @@ function showCourseDetail(classId) {
         <h2 class="text-xl font-bold ${themeChoice('text-white', 'text-gray-900')}">${c.shortName || c.name}</h2>
         <p class="text-sm ${themeChoice('text-gray-400', 'text-gray-600')}">${c.name} · ${periodLabel}</p>
         <div class="flex items-center gap-2 mt-2">
-          <button onclick="gotoClassAssignments('${c.id}')" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${themeChoice('bg-[#0a0a0f] border-[#22222e] text-gray-300 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-xs font-medium transition-colors">${icon('clipboard','w-3.5 h-3.5')} Assignments</button>
+          <button onclick="gotoClassAssignments('${c.id}')" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${themeChoice('bg-[#0a0a0f] border-[#22222e] text-gray-300 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-xs font-medium transition-colors">${icon('clipboard','w-3.5 h-3.5')} Grades</button>
           <button onclick="gotoClassTrends('${c.id}')" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${themeChoice('bg-[#0a0a0f] border-[#22222e] text-gray-300 hover:text-blue-300 hover:border-blue-500/30', 'bg-white border-[#d9dde7] text-gray-600 hover:text-blue-700 hover:border-blue-400/40')} border text-xs font-medium transition-colors">${icon('trend','w-3.5 h-3.5')} Reports</button>
         </div>
       </div>
@@ -1421,6 +1461,15 @@ document.addEventListener('click', (e) => {
   closeSidebarFlyout();
 });
 
+document.addEventListener('click', (e) => {
+  const bar = e.target.closest('.multi-day-bar');
+  if (!bar) return;
+  e.stopPropagation();
+  const idx = parseInt(bar.dataset.mdx, 10);
+  const ev = (state._monthMultiEvents || [])[idx];
+  if (ev) openMultiDayEventDetail(ev.startDate, ev.endDate, ev.name);
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeSidebarFlyout();
 });
@@ -1499,8 +1548,20 @@ function renderAssignments() {
   const d = state.computed;
   if (!d) return skeleton();
   const classes = d.activeClasses?.filter(c => c.isAcademic) || [];
-  const cls = classes.find(c => c.id === state.assignmentsClassId);
-  if (!cls) return '<div class="flex flex-col items-center justify-center h-64 text-gray-500"><div class="text-lg mb-2">Select a class</div><div class="text-sm">Choose a class from the Assignments menu in the sidebar</div></div>';
+  let cls = classes.find(c => c.id === state.assignmentsClassId);
+  if (!cls) {
+    const autoPeriod = state.assignmentsPeriod && PERIOD_ORDER.includes(state.assignmentsPeriod) ? state.assignmentsPeriod : defaultPeriod();
+    cls = [...classes].sort((a, b) => {
+      const ga = a.periodGrade?.[autoPeriod];
+      const gb = b.periodGrade?.[autoPeriod];
+      if (ga == null && gb == null) return 0;
+      if (ga == null) return 1;
+      if (gb == null) return -1;
+      return ga - gb;
+    })[0];
+    if (cls) state.assignmentsClassId = cls.id;
+  }
+  if (!cls) return '<div class="flex flex-col items-center justify-center h-64 text-gray-500"><div class="text-lg mb-2">No classes yet</div><div class="text-sm">Grades will appear here once grade data is available</div></div>';
   const goal = d.goal;
   const ci = classes.indexOf(cls);
   const color = classColorFor(cls.id);
@@ -1524,7 +1585,7 @@ function renderAssignments() {
         <div>
           <h1 class="text-2xl font-bold text-white">${cls.shortName || cls.name}</h1>
           <p class="text-gray-400 mt-1 text-sm">${cls.categories?.length || 0} categories · ${periodCount} assignments in ${PERIOD_FULL[period]}</p>
-          ${triliumNotesFor(cls.id) ? `<a href="${triliumWebUrl(triliumNotesFor(cls.id).noteId)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 text-xs ${themeChoice('text-blue-400 hover:text-blue-300','text-blue-700 hover:text-blue-800')} mt-1 transition-colors">${icon('book','w-3.5 h-3.5')} ${escapeHtml(triliumNotesFor(cls.id).noteTitle || 'Class notes')} <span class="text-gray-500">↗</span></a>` : ''}
+          ${triliumNotesFor(cls.id) ? `<a href="${triliumWebUrl(triliumNotesFor(cls.id).noteId)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 text-xs ${themeChoice('text-blue-400 hover:text-blue-300','text-blue-700 hover:text-blue-800')} mt-1 transition-colors">${icon('trilium','w-3.5 h-3.5')} ${escapeHtml(triliumNotesFor(cls.id).noteTitle || 'Class notes')} <span class="text-gray-500">↗</span></a>` : ''}
         </div>
       </div>
       <div class="text-right">
@@ -1550,9 +1611,15 @@ function renderAssignments() {
       const catClose = catGs === 'close';
       const catColor = goalColor(cg.average, goal);
       const sorted = [...cg.assignments].filter(a => a.status !== 'Excuse' && a.status !== 'Exempt').sort((a, b) => (b.dueDate || '').localeCompare(a.dueDate || ''));
+      const catKey = cls.id + '__' + cg.name;
+      const catExpanded = !!state.expandedCategories[catKey];
+      const LIMIT = 6;
+      const shown = catExpanded ? sorted : sorted.slice(0, LIMIT);
+      const overflow = sorted.length - LIMIT;
+      const hasMore = overflow > 0;
       return `
       <div class="bg-[#12121b] border border-[#22222e] rounded-2xl overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-3 border-b border-[#22222e]">
+        <button type="button" onclick="toggleAssignmentCategory('${jsStr(catKey)}')" class="w-full flex items-center justify-between px-5 py-3 border-b border-[#22222e] hover:bg-[#16161f] transition-colors text-left cursor-pointer">
           <div class="flex items-center gap-3">
             <div class="flex items-center gap-2">
               <h3 class="text-sm font-semibold text-gray-200">${cg.name}</h3>
@@ -1567,10 +1634,11 @@ function renderAssignments() {
               <span class="text-sm font-bold" style="color:${catColor}">${cg.average != null ? cg.average + '%' : '-'}</span>
             </div>
             ${catBelow ? `<span class="text-xs text-orange-400">below ${goal}%</span>` : catClose ? `<span class="text-xs text-yellow-400">within 1pt</span>` : `<span class="text-xs text-green-400">at goal</span>`}
+            <span class="text-gray-500 flex items-center transition-transform ${catExpanded ? '' : ''}" style="transform:${catExpanded ? 'rotate(180deg)' : ''}">${icon('chevronDown','w-4 h-4')}</span>
           </div>
-        </div>
-        <div class="divide-y divide-[#22222e]/50">
-          ${sorted.map(a => {
+        </button>
+        <div class="divide-y divide-[#22222e]/50 relative" style="position:relative">
+          ${shown.map(a => {
             const aGs = goalStatus(a.pct, goal);
             const isBelow = aGs === 'below';
             const isClose = aGs === 'close';
@@ -1601,10 +1669,21 @@ function renderAssignments() {
             </div>`;
           }).join('')}
           ${sorted.length === 0 ? '<div class="px-5 py-4 text-sm text-gray-600 text-center">No active assignments in this period</div>' : ''}
+          ${hasMore && !catExpanded ? `
+            <div class="category-more absolute inset-x-0 bottom-0 h-20 pointer-events-none" style="background:linear-gradient(to top, #12121b, transparent)"></div>
+            <button type="button" onclick="toggleAssignmentCategory('${jsStr(catKey)}')" title="Expand to show all of the rest"
+              class="absolute inset-x-0 bottom-0 h-10 flex items-center justify-center text-xs font-medium text-gray-300 hover:text-white transition-colors">
+              Expand to show all of the rest
+            </button>` : ''}
         </div>
       </div>`;
     }).join('')}
   </div>`;
+}
+
+function toggleAssignmentCategory(catKey) {
+  state.expandedCategories[catKey] = !state.expandedCategories[catKey];
+  render();
 }
 
 function setGradePeriod(p) {
@@ -1819,7 +1898,7 @@ function renderMultiClassChart(classes, goal, height = 280, width = 800, overall
     series,
     seriesPts,
     classIds: classes.map(c => c.id), periodKey,
-    title: 'Assignments', fmt: fmtDateShort, lastIdx: dates.length - 1,
+    title: 'Grades', fmt: fmtDateShort, lastIdx: dates.length - 1,
     multiClass: true
   };
 
@@ -1925,17 +2004,20 @@ function itemFromAssignment(a) {
   const ut = getUserTodos();
   const edit = a && a.id ? (ut.edits[a.id] || {}) : {};
   const key = 'classroom:' + a.id;
+  // Use the fuzzy-matched GradeTrack class id for the correct color;
+  // fall back to a generic palette for unmatched courses.
+  const matchedId = a.matchedClassId || a.courseId;
   return {
     key,
     src: 'classroom',
     id: a.id,
     title: (edit.title || a.title || '(Untitled)').trim(),
     courseName: a.courseName || '',
-    color: classIsKnown(a.courseId) ? classColorFor(a.courseId) : courseColorFor(a.courseName),
+    color: a.matchedClassId ? classColorFor(a.matchedClassId) : courseColorFor(a.courseName),
     done: isAssignmentDone(a),
     description: (edit.description || a.description || '').trim(),
     instructions: (edit.instructions || a.instructions || '').trim(),
-    materials: a.materials || [],
+    materials: [...(a.materials || []), ...(a.submissionAttachments || [])],
     link: (edit.link || a.submissionLink || (a.courseId && a.id ? `https://classroom.google.com/c/${a.courseId}/a/${a.id}` : '')).trim(),
     grade: a.assignedGrade != null ? `${Number(a.assignedGrade)}/${a.maxPoints ?? '?'}` : '',
   };
@@ -1969,7 +2051,7 @@ function calendarItemsFor(dateStr) {
   return [...fromAsns, ...fromTodos].sort((a, b) => a.title.localeCompare(b.title));
 }
 
-function renderCalendarDayCell(dateStr, day, year, month) {
+function renderCalendarDayCell(dateStr, day, year, month, multiEvents, firstDay) {
   const items = calendarItemsFor(dateStr);
   const hasItems = items.length > 0;
   const allDone = hasItems && items.every(i => i.done);
@@ -1977,16 +2059,146 @@ function renderCalendarDayCell(dateStr, day, year, month) {
   const isToday = now.getFullYear() === year && now.getMonth() === month && now.getDate() === day;
   const isSelected = state.calendarSelectedDate === dateStr;
   const cls = [
-    'cal-day aspect-square p-1 rounded-xl border hover:border-blue-500/30 transition-colors cursor-pointer relative',
+    'cal-day aspect-square p-1 rounded-xl border hover:border-blue-500/30 transition-colors cursor-pointer relative flex flex-col',
     isSelected ? 'selected' : '',
     isToday ? 'today' : '',
     allDone ? 'all-done' : '',
   ].filter(Boolean).join(' ');
-  const numCls = allDone ? 'text-green-400' : isToday ? 'text-blue-400' : 'text-gray-400';
+  const numCls = allDone ? 'text-green-400' : isToday ? '' : 'text-gray-400';
+  const events = (state.computed?.schoolEvents || []).filter(e => e.date === dateStr && !e.isMultiDay);
   return `<div data-date="${dateStr}" class="${cls}" onclick="selectCalendarDay('${dateStr}')">
-    <div class="cal-day-num text-xs font-medium ${numCls}">${day}</div>
-    ${items.slice(0, 14).map(i => `<div class="w-full h-1 rounded-full mt-0.5" style="background:${i.color}; opacity:${i.done ? 0.3 : 1}"></div>`).join('')}
-    ${items.length > 14 ? `<div class="text-xs text-gray-600 mt-0.5">+${items.length - 14}</div>` : ''}
+    <div class="cal-day-num text-sm font-medium ${numCls}">${day}</div>
+    ${(() => {
+      const totalSlots = items.length + events.length;
+      const overflow = totalSlots > 6;
+      if (overflow) {
+        return `<div class="flex-1 min-h-0 overflow-hidden">
+          ${items.slice(0, 14).map(i => `<div class="w-full h-1 rounded-full mt-0.5" style="background:${i.color}; opacity:${i.done ? 0.3 : 1}"></div>`).join('')}
+          ${items.length > 14 ? `<div class="text-xs text-gray-600 mt-0.5">+${items.length - 14}</div>` : ''}
+        </div>`;
+      }
+      return `<div class="flex-1 min-h-0 overflow-hidden space-y-px">
+        ${items.slice(0, 8).map(i => `<div class="w-full flex items-center gap-1 rounded-sm overflow-hidden cursor-pointer" style="background:${i.color}12" title="${escapeHtml(i.title)}" onclick="event.stopPropagation(); selectCalendarDay('${dateStr}'); setTimeout(() => openCalendarDetail('${jsStr(i.key)}'), 50)"><span class="w-1 h-2 rounded-full flex-shrink-0" style="background:${i.color}; opacity:${i.done ? 0.3 : 1}"></span><span class="text-[8px] leading-tight truncate" style="color:${i.color}; opacity:${i.done ? 0.4 : 0.8}">${escapeHtml(i.title)}</span></div>`).join('')}
+        ${items.length > 8 ? `<div class="text-[8px] text-gray-600">+${items.length - 8}</div>` : ''}
+      </div>`;
+    })()}
+    ${events.length ? `<div class="mt-auto pt-0.5 space-y-0.5 flex flex-col items-stretch">${events.slice(0, 3).map((ev, ei) => {
+      const color = schoolEventColor(ev);
+      const marker = ev?.uniformDay ? '★ ' : '';
+      return `<div class="truncate text-[10px] leading-tight px-1.5 py-px rounded font-medium w-full text-left cursor-pointer hover:brightness-125" style="color:${color}; background:${color}1a; border-left:2px solid ${color}" title="${escapeHtml(ev?.name || '')}" onclick="event.stopPropagation(); selectCalendarDay('${dateStr}'); setTimeout(() => openSchoolEventDetail(${ei}), 50)">${marker}${escapeHtml(ev?.name || '')}</div>`;
+    }).join('')}${events.length > 3 ? `<div class="text-[10px] text-gray-500 leading-tight">+${events.length - 3} more</div>` : ''}</div>` : ''}
+  </div>`;
+}
+
+function schoolEventColor(ev) {
+  const light = isLightTheme();
+  const map = {
+    requiredParentEvent: light ? '#dc2626' : '#fb7185',
+    requiredStudentEvent: light ? '#2563eb' : '#60a5fa',
+    requiredTesting: light ? '#16a34a' : '#4ade80',
+    uniformDay: light ? '#d97706' : '#fbbf24',
+  };
+  if (ev?.category && map[ev.category]) return map[ev.category];
+  if (ev?.uniformDay) return map.uniformDay;
+  return light ? '#64748b' : '#94a3b8';
+}
+
+function schoolEventPill(ev) {
+  const color = schoolEventColor(ev);
+  const marker = ev?.uniformDay ? '★ ' : '';
+  return `<div class="truncate text-[10px] leading-tight px-1.5 py-px rounded font-medium w-full text-left" style="color:${color}; background:${color}1a; border-left:2px solid ${color}" title="${escapeHtml(ev?.name || '')}">${marker}${escapeHtml(ev?.name || '')}</div>`;
+}
+
+function renderMultiDayEvents(events, firstDay, daysInMonth, year, month) {
+  const multiEvents = [];
+  const seen = new Set();
+  for (const ev of (events || [])) {
+    if (!ev.isMultiDay || !ev.startDate || !ev.endDate) continue;
+    const key = ev.startDate + '|' + ev.endDate + '|' + ev.name;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const sParts = ev.startDate.split('-').map(Number);
+    const eParts = ev.endDate.split('-').map(Number);
+    const sDate = new Date(sParts[0], sParts[1] - 1, sParts[2]);
+    const eDate = new Date(eParts[0], eParts[1] - 1, eParts[2]);
+    const monthStart = new Date(year, month, 1);
+    const monthEnd = new Date(year, month + 1, 0);
+    const visStart = sDate < monthStart ? monthStart : sDate;
+    const visEnd = eDate > monthEnd ? monthEnd : eDate;
+    const startCol = firstDay + (visStart.getDate() - 1);
+    const endCol = firstDay + (visEnd.getDate() - 1);
+    const color = schoolEventColor(ev);
+    const marker = ev.uniformDay ? '★ ' : '';
+    multiEvents.push({ name: ev.name, startCol, endCol, color, marker, startDate: ev.startDate, endDate: ev.endDate });
+  }
+  return multiEvents;
+}
+
+function multiDayBarHtml() { return ''; }
+
+function positionMultiDayOverlay() {
+  // Multi-day bars are now positioned via CSS in week-row wrappers.
+}
+
+function schoolEventDetail(ev, idx) {
+  const color = schoolEventColor(ev);
+  const categoryLabel = ev?.category === 'requiredParentEvent' ? 'Required parent event'
+    : ev?.category === 'requiredStudentEvent' ? 'Required student event'
+    : ev?.category === 'requiredTesting' ? 'Required testing'
+    : ev?.uniformDay ? 'Uniform day' : 'School event';
+  const isActive = state.calendarEventDetailId === idx;
+  return `<div class="flex items-center gap-2 p-1.5 rounded-lg cursor-pointer transition-colors ${isActive ? 'bg-[#22222e]' : 'hover:bg-[#1a1a28]'}" onclick="openSchoolEventDetail(${idx})">
+    <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" style="background:${color}"></span>
+    <span class="flex-1 min-w-0 text-xs text-gray-200 truncate" title="${escapeHtml(ev?.name || '')}">${ev?.uniformDay ? '★ ' : ''}${escapeHtml(ev?.name || '')}</span>
+    <span class="text-[9px] text-gray-500 flex-shrink-0" style="color:${color}">${categoryLabel}</span>
+  </div>`;
+}
+
+function openSchoolEventDetail(idx) {
+  state.calendarEventDetailId = state.calendarEventDetailId === idx ? null : idx;
+  state.calendarDetailId = null;
+  state.calendarDetailEditing = false;
+  render();
+}
+
+window.openMultiDayEventDetail = function(startDate, endDate, name) {
+  const ev = (state.computed?.schoolEvents || []).find(e => e.name === name && e.startDate === startDate && e.endDate === endDate);
+  if (!ev) return;
+  state.calendarEventDetailId = '_multi_' + startDate + '_' + endDate + '_' + name;
+  state.calendarDetailId = null;
+  state.calendarDetailEditing = false;
+  state._multiDayDetailEvent = ev;
+  render();
+};
+
+function renderSchoolEventDetailPanel(ev) {
+  if (!ev) return '';
+  const color = schoolEventColor(ev);
+  const categoryLabel = ev?.category === 'requiredParentEvent' ? 'Required parent event'
+    : ev?.category === 'requiredStudentEvent' ? 'Required student event'
+    : ev?.category === 'requiredTesting' ? 'Required testing'
+    : ev?.uniformDay ? 'Uniform day' : 'School event';
+  const isRange = ev.startDate && ev.endDate && ev.startDate !== ev.endDate;
+  const dateLabel = isRange ? `${formatDate(ev.startDate)} — ${formatDate(ev.endDate)}` : formatDate(ev.date);
+  return `
+  <div class="cal-detail open">
+    <div class="cal-detail-card">
+      <div class="flex items-center justify-between gap-2 mb-3">
+        <div class="flex items-center gap-2 text-[10px] uppercase tracking-wider text-gray-500">
+          ${icon('calendar','w-3 h-3')} School event
+        </div>
+        <button onclick="state.calendarEventDetailId=null; render()" class="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors" title="Close">${icon('x','w-4 h-4')}</button>
+      </div>
+      <div class="space-y-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full" style="background:${color}20; color:${color}"><span class="w-1.5 h-1.5 rounded-full" style="background:${color}"></span>${escapeHtml(categoryLabel)}</span>
+          ${ev.uniformDay ? `<span class="text-xs px-2 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">★ Uniform day</span>` : ''}
+        </div>
+        <div class="text-base font-semibold text-gray-100">${ev?.uniformDay ? '★ ' : ''}${escapeHtml(ev.name)}</div>
+        <div class="text-sm text-gray-400">${escapeHtml(dateLabel)}</div>
+        ${isRange ? `<div class="text-xs text-gray-500">${Math.round((new Date(ev.endDate) - new Date(ev.startDate)) / 86400000) + 1} days</div>` : ''}
+      </div>
+    </div>
   </div>`;
 }
 
@@ -2058,8 +2270,10 @@ function renderCalendarDetail(items) {
       ${item.description ? `<div class="text-sm text-gray-400 whitespace-pre-wrap leading-relaxed">${escapeHtml(item.description)}</div>` : ''}
       ${item.instructions ? `<div class="text-sm text-gray-400 whitespace-pre-wrap leading-relaxed">${escapeHtml(item.instructions)}</div>` : ''}
       ${item.materials.length ? `<div class="space-y-1.5">${item.materials.map(m => {
-        const mTitle = m.title || m.link || 'Attachment';
-        return m.link ? `<a href="${escapeHtml(m.link)}" target="_blank" rel="noopener" class="w-full flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 py-1.5 px-2.5 rounded-lg bg-[#0a0a0f] border border-[#22222e] hover:border-blue-500/30 transition-colors">${icon('paperclip','w-3.5 h-3.5 flex-shrink-0')}<span class="truncate">${escapeHtml(mTitle)}</span></a>` : `<div class="w-full flex items-center gap-2 text-sm text-gray-400 py-1.5 px-2.5 rounded-lg bg-[#0a0a0f] border border-[#22222e]">${icon('paperclip','w-3.5 h-3.5 flex-shrink-0')}<span class="truncate">${escapeHtml(mTitle)}</span></div>`;
+        const mUrl = m.url || m.link || '';
+        const mTitle = m.title || mUrl || 'Attachment';
+        const isSubmission = !!(m.isSubmission || item.materials.indexOf(m) >= (item.rawMaterials?.length || 0));
+        return mUrl ? `<a href="${escapeHtml(mUrl)}" target="_blank" rel="noopener" class="w-full flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 py-1.5 px-2.5 rounded-lg bg-[#0a0a0f] border border-[#22222e] hover:border-blue-500/30 transition-colors">${icon('paperclip','w-3.5 h-3.5 flex-shrink-0')}<span class="truncate">${escapeHtml(mTitle)}</span></a>` : `<div class="w-full flex items-center gap-2 text-sm text-gray-400 py-1.5 px-2.5 rounded-lg bg-[#0a0a0f] border border-[#22222e]">${icon('paperclip','w-3.5 h-3.5 flex-shrink-0')}<span class="truncate">${escapeHtml(mTitle)}</span></div>`;
       }).join('')}</div>` : ''}
       ${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 transition-colors">${icon('external','w-3 h-3')} Open in Google Classroom</a>` : ''}
     </div>`;
@@ -2132,14 +2346,29 @@ function renderCalendar() {
   const selectedLabel = formatDate(state.calendarSelectedDate);
   const doneCount = selectedItems.filter(i => i.done).length;
   const allDone = selectedItems.length > 0 && doneCount === selectedItems.length;
+  const selectedEvents = (state.computed?.schoolEvents || []).filter(e => e.date === state.calendarSelectedDate);
+  const monthStart = `${monthPrefix}-01`;
+  const monthEnd = `${monthPrefix}-${String(daysInMonth).padStart(2, '0')}`;
+  const monthMultiDayEntries = (state.computed?.schoolEvents || []).filter(e => {
+    if (!e.isMultiDay) return false;
+    const sd = e.startDate || e.date;
+    const ed = e.endDate || e.date;
+    return sd <= monthEnd && ed >= monthStart;
+  });
+  const monthMultiEvents = renderMultiDayEvents(monthMultiDayEntries, firstDay, daysInMonth, year, month);
+  state._monthMultiEvents = monthMultiEvents;
 
   return `
-  <div class="flex items-center justify-between mb-6">
+  <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
     <div>
       <h1 class="text-2xl font-bold text-white">Calendar</h1>
       <p class="text-gray-400 mt-1 text-sm">${monthAssignments.length} assignment${monthAssignments.length === 1 ? '' : 's'}${monthTodoCount ? ` · ${monthTodoCount} thing${monthTodoCount === 1 ? '' : 's'} to do` : ''} this month</p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
+      <div class="inline-flex items-center gap-1 bg-[#0a0a0f] border border-[#22222e] rounded-xl p-1">
+        <button type="button" onclick="window._nqSetCalendarMode('assignments')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${state.calendarMode !== 'notequiz' ? 'bg-blue-500/15 text-blue-300' : 'text-gray-400 hover:text-gray-200'}">Assignments</button>
+        <button type="button" onclick="window._nqSetCalendarMode('notequiz')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${state.calendarMode === 'notequiz' ? 'bg-blue-500/15 text-blue-300' : 'text-gray-400 hover:text-gray-200'}">Note quizzes</button>
+      </div>
       <button onclick="state.calendarMonth--; if(state.calendarMonth<0){state.calendarMonth=11;state.calendarYear--;} render()" class="w-8 h-8 rounded-lg bg-[#12121b] border border-[#22222e] flex items-center justify-center text-gray-400 hover:text-white transition-colors">${icon('chevronLeft','w-4 h-4')}</button>
       <span class="text-sm font-medium text-gray-200 w-32 text-center">${['January','February','March','April','May','June','July','August','September','October','November','December'][month]} ${year}</span>
       <button onclick="state.calendarMonth++; if(state.calendarMonth>11){state.calendarMonth=0;state.calendarYear++;} render()" class="w-8 h-8 rounded-lg bg-[#12121b] border border-[#22222e] flex items-center justify-center text-gray-400 hover:text-white transition-colors">${icon('chevronRight','w-4 h-4')}</button>
@@ -2148,11 +2377,65 @@ function renderCalendar() {
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-    <div class="lg:col-span-2 bg-[#12121b] border border-[#22222e] rounded-2xl p-4">
-      <div class="grid grid-cols-7 gap-1">
-        ${DAYS.map(dd => `<div class="text-center text-xs font-medium text-gray-500 py-2">${dd}</div>`).join('')}
-        ${Array(firstDay).fill(0).map(() => '<div></div>').join('')}
-        ${Array(daysInMonth).fill(0).map((_, i) => renderCalendarDayCell(`${monthPrefix}-${String(i + 1).padStart(2, '0')}`, i + 1, year, month)).join('')}
+    <div class="lg:col-span-2 bg-[#12121b] border border-[#22222e] rounded-2xl p-4 cal-grid-wrap" style="position:relative">
+      <div class="cal-grid">
+        <div class="grid grid-cols-7 gap-1 cal-grid-header">
+          ${DAYS.map(dd => `<div class="text-center text-xs font-medium text-gray-500 py-2">${dd}</div>`).join('')}
+        </div>
+        ${(() => {
+          const totalCells = firstDay + daysInMonth;
+          const weekCount = Math.ceil(totalCells / 7);
+          const allCells = [
+            ...Array(firstDay).fill(0).map(() => null),
+            ...Array(daysInMonth).fill(0).map((_, i) => i + 1),
+          ];
+          const weeks = [];
+          for (let w = 0; w < weekCount; w++) {
+            const rowCells = allCells.slice(w * 7, w * 7 + 7);
+            const cellsHtml = rowCells.map(day => {
+              if (day === null) return '<div></div>';
+              return renderCalendarDayCell(`${monthPrefix}-${String(day).padStart(2, '0')}`, day, year, month, monthMultiEvents, firstDay);
+            }).join('');
+            // Compute multi-day bars for this week row
+            const weekStartCol = w * 7;
+            const weekEndCol = weekStartCol + 6;
+            const weekBars = [];
+            const rowSlots = [];
+            const sortedEvs = monthMultiEvents
+              .filter(ev => ev.endCol >= weekStartCol && ev.startCol <= weekEndCol)
+              .map(ev => ({
+                ev,
+                segStart: Math.max(ev.startCol, weekStartCol),
+                segEnd: Math.min(ev.endCol, weekEndCol),
+              }))
+              .sort((a, b) => a.segStart - b.segStart || a.segEnd - b.segEnd);
+            for (const { ev, segStart, segEnd } of sortedEvs) {
+              const colInRow = segStart - weekStartCol;
+              const span = segEnd - segStart + 1;
+              const leftPct = (colInRow / 7 * 100);
+              const widthPct = (span / 7 * 100);
+              const inset = 0.85;
+              const barLeft = leftPct + inset;
+              const barWidth = widthPct - inset * 2;
+              let slot = 0;
+              for (const occupied of rowSlots) {
+                if (!(barLeft + barWidth <= occupied.left || barLeft >= occupied.left + occupied.width)) {
+                  slot = Math.max(slot, occupied.slot + 1);
+                }
+              }
+              rowSlots.push({ left: barLeft, width: barWidth, slot });
+              const isStart = ev.startCol <= weekStartCol;
+              const isEnd = ev.endCol >= weekEndCol;
+              const bdrL = isStart ? 'border-top-left-radius:3px;border-bottom-left-radius:3px;' : '';
+              const bdrR = isEnd ? 'border-top-right-radius:3px;border-bottom-right-radius:3px;' : '';
+              const leftBorder = isStart ? `border-left:2px solid ${ev.color};` : '';
+              const label = `<span class="truncate">${ev.marker}${escapeHtml(ev.name)}</span>`;
+              weekBars.push(`<div class="multi-day-bar" data-mdx="${monthMultiEvents.indexOf(ev)}" style="position:absolute;left:${barLeft}%;width:${barWidth}%;bottom:${5.15 + slot * 18}px;height:16px;background:${ev.color}1a;color:${ev.color};${leftBorder}${bdrL}${bdrR}pointer-events:auto;cursor:pointer;display:flex;align-items:center;padding:0 6px;font-size:10px;font-weight:500;overflow:hidden;transition:filter 0.15s;border-radius:4px;z-index:10;" title="${escapeHtml(ev.name)}">${label}</div>`);
+            }
+            weeks.push(`<div class="cal-week relative" style="min-height:0"><div class="grid grid-cols-7 gap-1">${cellsHtml}</div>${weekBars.join('')}</div>`);
+          }
+          return weeks.join('');
+        })()}
       </div>
     </div>
 
@@ -2162,6 +2445,12 @@ function renderCalendar() {
         <span id="cal-done-count" class="text-xs ${allDone ? 'text-green-400' : 'text-gray-500'}">${doneCount}/${selectedItems.length} done</span>
       </div>
       <div class="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2 py-2 cal-list">
+        ${selectedEvents.length ? `<div class="rounded-xl border border-[#22222e] bg-[#0a0a0f] p-2.5 space-y-1.5 cal-events-list">${selectedEvents.map((e, i) => schoolEventDetail(e, i)).join('')}</div>` : ''}
+        ${state.calendarEventDetailId !== null
+          ? (state.calendarEventDetailId.startsWith('_multi_')
+            ? renderSchoolEventDetailPanel(state._multiDayDetailEvent)
+            : renderSchoolEventDetailPanel(selectedEvents[state.calendarEventDetailId]))
+          : ''}
         ${renderCalendarItems(selectedItems)}
         ${state.todoFormOpen
           ? renderCalendarAddForm(state.calendarSelectedDate)
@@ -2176,6 +2465,7 @@ function selectCalendarDay(dateStr) {
   state.calendarSelectedDate = dateStr;
   state.calendarDetailId = null;
   state.calendarDetailEditing = false;
+  state.calendarEventDetailId = null;
   state.todoFormOpen = false;
   state.todoForm = {};
   state.openItemMenu = null;
@@ -2245,6 +2535,7 @@ function updateCalendarCounts(dateStr) {
 window.openCalendarDetail = function(key) {
   state.calendarDetailId = key;
   state.calendarDetailEditing = false;
+  state.calendarEventDetailId = null;
   state.todoFormOpen = false;
   state.openItemMenu = null;
   render();
@@ -2338,6 +2629,7 @@ window.openTodoForm = function() {
   state.todoForm = { title: '', classId: '', description: '', instructions: '', link: '' };
   state.calendarDetailId = null;
   state.calendarDetailEditing = false;
+  state.calendarEventDetailId = null;
   state.openItemMenu = null;
   render();
 };
@@ -2374,6 +2666,12 @@ if (typeof _calMenuDocBound === 'undefined') {
     if (state.openItemMenu && !e.target.closest('.cal-menu') && !e.target.closest('.cal-more')) {
       state.openItemMenu = null;
       render();
+    }
+    if (state.noteQuizMenuOpen && !e.target.closest('[data-nq-menu]')) {
+      state.noteQuizMenuOpen = null;
+      if (typeof renderReviewGrid === 'function' && state.blooketClasses) {
+        renderReviewGrid(state.blooketClasses, state.blooketCustomSets);
+      }
     }
   });
 }
@@ -2413,6 +2711,11 @@ function renderPlanner() {
   </div>
 
   <div id="review-sets" class="grid grid-cols-1 lg:grid-cols-2 gap-5 content-start"></div>
+  <script>
+    if (typeof _nqRefreshTodayList === 'function') {
+      _nqRefreshTodayList();
+    }
+  </script>
   `;
 }
 
@@ -3003,7 +3306,7 @@ function renderInsights() {
           <div class="text-xl font-bold mt-1 text-green-400">${classes.filter(c => c.weightedGrade != null && c.weightedGrade >= goal).length}/${classes.length}</div>
         </div>
         <div class="bg-[#12121b] border border-[#22222e] rounded-2xl p-4">
-          <div class="text-xs text-gray-500">Graded Assignments</div>
+          <div class="text-xs text-gray-500">Assignments Graded</div>
           <div class="text-xl font-bold mt-1 text-white">${graded.length}</div>
         </div>
         <div class="bg-[#12121b] border border-[#22222e] rounded-2xl p-4">
@@ -3170,6 +3473,16 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function patchAiBubble(text) {
+  const log = document.getElementById('ai-chat-log');
+  if (!log) return;
+  const bubbles = log.querySelectorAll('.ai-md');
+  const b = bubbles[bubbles.length - 1];
+  if (!b) return;
+  b.innerHTML = renderMarkdown(text) + '<span class="ai-stream-cursor"></span>';
+  log.scrollTop = log.scrollHeight;
+}
+
 function jsStr(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
@@ -3187,23 +3500,43 @@ window.askAIQuestion = async function() {
   saveCoachLocal();
   render();
   try {
-    const res = await fetch('/api/insights/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, conversation: state.aiConversation }) });
+    const res = await fetch('/api/insights/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, conversation: state.aiConversation, stream: true }) });
     if (!res.ok) {
       let detail = 'Request failed';
       try { detail = (await res.json()).detail || detail; } catch (e) {}
       throw new Error(detail);
     }
-    const data = await res.json();
     const last = state.aiChat[state.aiChat.length - 1];
-    if (last && last.loading) {
-      last.loading = false;
-      last.content = data.answer || 'No answer received.';
-      last.created = data.created || [];
-    }
-    if (Array.isArray(data.conversation)) {
-      state.aiConversation = data.conversation;
-    } else {
-      state.aiConversation = [...state.aiConversation, { role: 'assistant', content: data.answer || 'No answer received.' }];
+    let acc = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const flush = () => {
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        for (const line of raw.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(6)); } catch (e) { continue; }
+          if (evt.type === 'delta') {
+            acc += evt.content || '';
+            if (last) { last.loading = false; last.content = acc; }
+            patchAiBubble(acc);
+          } else if (evt.type === 'done') {
+            if (last) { last.loading = false; last.content = acc || last.content || 'No answer received.'; last.created = evt.created || []; }
+            if (Array.isArray(evt.conversation)) state.aiConversation = evt.conversation;
+          } else if (evt.type === 'error') {
+            throw new Error(evt.message);
+          }
+        }
+      }
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      flush();
     }
     const insightsRes = await fetch('/api/insights');
     if (insightsRes.ok) state.aiInsights = await insightsRes.json();
@@ -3277,6 +3610,7 @@ function openSettings() {
   closeModal();
   document.querySelector('.sidebar')?.classList.remove('open');
   document.getElementById('sidebar-overlay')?.classList.remove('open');
+  state.settingsView = 'home';
   navigate('settings');
 }
 window.openSettings = openSettings;
@@ -3328,6 +3662,7 @@ async function triliumLoadChapters(classId, latestOnly = false) {
     const res = await fetch(`/api/trilium/notes/${encodeURIComponent(noteId)}`);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    if (!state.trilium.cache) state.trilium.cache = {};
     state.trilium.cache[noteId] = { at: now, children: data.children || [] };
     container.innerHTML = triliumChaptersHtml(data.children || [], link, latestOnly);
   } catch (err) {
@@ -3386,7 +3721,7 @@ function triliumCardHtml(classId, clsName, variant = false) {
       ${compact ? '' : `
       <div class="flex items-center justify-between gap-2 mb-1.5">
         <a href="${open}" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="flex items-center gap-1.5 min-w-0 text-xs font-medium ${themeChoice('text-blue-400 hover:text-blue-300', 'text-blue-700 hover:text-blue-800')} transition-colors" title="Open note folder in Trilium">
-          ${icon('book','w-3.5 h-3.5')}
+          ${icon('trilium','w-3.5 h-3.5')}
           <span class="truncate">${escapeHtml(link.noteTitle || 'Class notes')}</span>
           <span class="text-gray-500">↗</span>
         </a>
@@ -3444,8 +3779,14 @@ async function pollScrapeLogs() {
       if (status) status.textContent = done ? 'Completed' : 'Finished with errors (exit ' + data.exitCode + ')';
       const btn = document.getElementById('scrape-start-btn');
       if (btn) btn.disabled = false;
-      if (done) { await refreshData(); showToast('Classes refreshed!', 'success'); }
-      else showToast('Scrape finished with errors — check the log', 'error');
+      if (done) {
+        await refreshData();
+        showToast('Classes refreshed!', 'success');
+        if (state.notifications?.scrapeDone !== false) browserNotify('Grades refreshed', { body: 'Your classes are up to date.' });
+      } else {
+        showToast('Scrape finished with errors — check the log', 'error');
+        if (state.notifications?.scrapeDone !== false) browserNotify('Grades refresh failed', { body: 'The scrape finished with errors. Check the log in Data & Refresh.' });
+      }
       return;
     } catch (err) {
       const btn = document.getElementById('scrape-start-btn');
@@ -3467,8 +3808,27 @@ window.clearScrapeLog = function() {
 };
 
 // ─── VIEW ROUTER ────────────────────────────────────────────────
-function render(options = {}) {
+function renderRecreatePopup() {
+  return `
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onclick="if(event.target===this) window._closeRecreatePopup()">
+    <div class="bg-[#16161f] border border-[#22222e] rounded-2xl p-6 w-full max-w-md shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-semibold text-gray-100">Recreate Quiz</h3>
+        <button onclick="window._closeRecreatePopup()" class="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors">${icon('x','w-4 h-4')}</button>
+      </div>
+      <p class="text-sm text-gray-400 mb-4">The new quiz will be generated from the same notes using the same method. Optionally add clarification for the AI about what to focus on differently.</p>
+      <textarea id="recreate-clarification" rows="3" class="w-full bg-[#0a0a0f] border border-[#22222e] rounded-xl px-3 py-2 text-sm text-gray-200 placeholder-gray-500 resize-none focus:border-blue-500/50 focus:outline-none transition-colors" placeholder="e.g. Focus more on vocabulary, skip questions about dates, make harder questions...">${escapeHtml(state._recreateClarification || '')}</textarea>
+      <div class="flex items-center gap-2 mt-4">
+        <button onclick="window._submitRecreate()" class="flex-1 px-3 py-2 rounded-xl bg-blue-500/20 border border-blue-500/30 text-sm text-blue-400 hover:bg-blue-500/30 transition-all">Recreate</button>
+        <button onclick="window._closeRecreatePopup()" class="px-3 py-2 rounded-xl text-sm text-gray-400 hover:text-gray-200 bg-[#0a0a0f] border border-[#22222e] transition-colors">Cancel</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function render(options = {}) {
   if (_quizCtx) return; // keep an active quiz on screen (auto-refresh must not wipe it)
+  if (window._nqActive) return; // keep an in-view note quiz on screen (auto-refresh must not wipe it)
   if (state.currentSetUrl && state.currentView === 'planner') {
     renderSetDetailView();
     return;
@@ -3479,7 +3839,6 @@ function render(options = {}) {
   closeDayTip();
   if (typeof updateSidebarUserInfo === 'function') updateSidebarUserInfo();
 
-  if (state.loading && !state.renderedOnce) { container.innerHTML = skeleton(); return; }
   if (state.error && !state.renderedOnce) {
     container.innerHTML = `<div class="flex flex-col items-center justify-center h-64">
       <div class="text-4xl mb-4">⚠️</div><div class="text-gray-400 text-lg mb-2">${state.error}</div>
@@ -3488,17 +3847,38 @@ function render(options = {}) {
   }
 
   const views = { overview: renderOverview, assignments: renderAssignments, analytics: renderAnalytics, calendar: renderCalendar, planner: renderPlanner, goals: renderGoals, insights: renderInsights, settings: renderSettings };
-  const fn = views[state.currentView] || renderOverview;
   const analyticsNav = ANALYTICS_VIEWS.includes(state.currentView) ? `<nav class="analytics-view-nav" aria-label="Analytics navigation">
     ${[['analytics', 'Reports'], ['insights', 'Insights'], ['goals', 'Goals']].map(([view, label]) => `<button type="button" class="${state.currentView === view ? 'active' : ''}" onclick="navigate('${view}')">${label}</button>`).join('')}
   </nav>` : '';
   const animate = state.renderedView === state.currentView ? '' : 'fade-in';
-  container.innerHTML = `<div class="${animate}">${analyticsNav}${fn()}</div>`;
-  state.renderedOnce = true;
-  state.renderedView = state.currentView;
-  triliumHydrate();
+
+  // Note-quiz calendar mode replaces the standard calendar entirely.
+  const popupHtml = state._recreatePopupOpen ? renderRecreatePopup() : '';
+  if (state.currentView === 'calendar' && state.calendarMode === 'notequiz' && typeof _renderNoteQuizCalendar === 'function') {
+    const calHtml = await _renderNoteQuizCalendar();
+    container.innerHTML = `<div class="${animate}">${analyticsNav}${calHtml}</div>${popupHtml}`;
+    state.renderedOnce = true;
+    state.renderedView = state.currentView;
+    triliumHydrate();
+  } else {
+    const fn = views[state.currentView] || renderOverview;
+    const mainHtml = fn();
+    container.innerHTML = `<div class="${animate}">${analyticsNav}${mainHtml}</div>${popupHtml}`;
+    state.renderedOnce = true;
+    state.renderedView = state.currentView;
+    triliumHydrate();
+  }
   if (state.currentView === 'settings') { checkTriliumStatus(); loadCurrentCredentials(); }
-  if (state.currentView === 'planner') loadBlooketClasses(!state.blooketLoaded);
+  if (state.currentView === 'planner') {
+    if (typeof renderReviewGridIfLoaded === 'function') renderReviewGridIfLoaded();
+    else loadBlooketClasses(!state.blooketLoaded);
+  }
+  if (state.currentView === 'overview' && typeof _nqRenderOverviewWidget === 'function') {
+    _nqRenderOverviewWidget();
+  }
+  if (state.currentView === 'calendar') {
+    // Multi-day bars are positioned via CSS in week-row wrappers
+  }
 
   // Update sidebar
   document.querySelectorAll('.nav-link').forEach(l => {
@@ -3528,23 +3908,117 @@ function render(options = {}) {
 
 function navigate(view) {
   if (_quizCtx) teardownQuiz();
+  if (window._nqActive) {
+    window._nqActive = false;
+    state.noteQuizReturnView = null;
+  }
   if (!VIEWS.includes(view)) view = 'overview';
   state.currentView = view;
   window.location.hash = view;
   render({ preserveScroll: false });
 }
 
+// ─── UPDATE CHECK ───────────────────────────────────────────────
+// Sidebar badge: a small pulsing dot on the settings cog when a newer
+// version is on origin/main. The actual install happens through the
+// dashboard's Settings → Updates panel — never auto-restarts. Update
+// state lives in state._update so the sidebar re-renders whenever the
+// value flips.
+
+state._update = { installed: '', available: '', behind: 0, available: false, checkedAt: 0 };
+
+async function checkForUpdate(force) {
+  try {
+    const url = '/api/update/check' + (force ? '?_=' + Date.now() : '');
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const data = await res.json();
+    state._update = {
+      installed: data.installed || '',
+      available: data.available || '',
+      behind: Number(data.behind || 0),
+      available: !!data.available,
+      checkedAt: Date.now(),
+    };
+    _renderUpdateBadge();
+  } catch (err) {
+    // Network blip; leave the badge alone.
+  }
+}
+
+function _renderUpdateBadge() {
+  const badge = document.getElementById('sidebar-update-badge');
+  if (!badge) return;
+  badge.classList.toggle('hidden', !state._update.available);
+  if (state._update.available) {
+    badge.title = `Update available: ${state._update.available} (installed ${state._update.installed})`;
+  }
+}
+
+async function runAppUpdate() {
+  showToast('Updating… don\'t close this tab.', 'info', 8000);
+  try {
+    const res = await fetch('/api/update/run', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(data.detail || `Update failed (HTTP ${res.status})`, 'error', 12000);
+      return false;
+    }
+    if (!data.ok) {
+      showToast(`Update failed: ${(data.stderr || '').slice(-200) || 'unknown'}`, 'error', 12000);
+      return false;
+    }
+    showToast('Update applied. Reloading…', 'success', 5000);
+    setTimeout(() => location.reload(), 1200);
+    return true;
+  } catch (err) {
+    showToast('Update error: ' + (err && err.message ? err.message : 'network'), 'error', 12000);
+    return false;
+  }
+}
+
+// Poll every hour; on visibility change (tab becomes visible), refresh too.
+setInterval(() => checkForUpdate(true), 60 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkForUpdate(true);
+});
+
+
 // ─── INIT ────────────────────────────────────────────────────────
 async function init() {
   try { applyTheme(localStorage.getItem('gradetrack-theme') || 'dark'); } catch (err) {}
   try { setSidebarCollapsed(localStorage.getItem('gradetrack-sidebar-collapsed') === '1'); } catch (err) {}
   loadCoachLocal();
-  await fetchComputed();
 
+  // Real routing: resolve the requested view up front so the page renders
+  // straight up instead of showing the dashboard first, then switching.
   const hash = window.location.hash.slice(1);
   if (hash && VIEWS.includes(hash)) state.currentView = hash;
 
   render({ preserveScroll: false });
+  await fetchComputed();
+
+  render({ preserveScroll: false });
+
+  // Preload quiz sets in the background so the Review view is instant when
+  // the user navigates there (avoids a visible skeleton + slow network fetch).
+  if (typeof loadBlooketClasses === 'function' && !state.blooketLoaded) {
+    loadBlooketClasses(false);
+  }
+
+  // Preload levels-based review progress from the backend so set cards show
+  // the correct level ring immediately and writes can flush to the server.
+  if (typeof preloadLevelsState === 'function') {
+    preloadLevelsState();
+  }
+
+  // Initial update-check (non-blocking). The background polling below keeps
+  // the sidebar badge in sync once per hour.
+  if (typeof checkForUpdate === 'function') checkForUpdate();
 
   window.addEventListener('hashchange', () => {
     const h = window.location.hash.slice(1);
@@ -3625,9 +4099,9 @@ async function init() {
     if (active) active.classList.add('scroll-active');
   });
 
-  // Welcome toast
-  setTimeout(() => showToast(`📊 GradeTrack loaded — ${state.computed?.activeClasses?.length || 0} classes, ${state.computed?.watchlist?.length || 0} watchlist items`, 'info'), 1500);
+  // Welcome toast removed: the dashboard should not toast on load.
 }
+
 
 window.addEventListener('error', (e) => {
   console.error('GradeTrack JS error:', e.message, e.error);

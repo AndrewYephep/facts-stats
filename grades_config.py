@@ -52,6 +52,10 @@ def load_settings():
         "ollamaModel": "gpt-oss:120b",
         "theme": "dark",
         "trilium": {"url": "", "token": "", "notes": {}},
+        "email": {"recipients": [], "subjectPrefix": "Grades Update"},
+        "emailHtml": "",
+        "notifications": {"enabled": False, "scrapeDone": True, "blooketDone": True, "noteQuizReady": True},
+        "noteQuiz": {"classes": {}},
         "updated": "",
     }
     try:
@@ -61,6 +65,15 @@ def load_settings():
             return defaults
         for key, default in defaults.items():
             data.setdefault(key, default)
+        # Nested defaults for notifications and noteQuiz.
+        if not isinstance(data.get("notifications"), dict):
+            data["notifications"] = dict(defaults["notifications"])
+        for k, v in defaults["notifications"].items():
+            data["notifications"].setdefault(k, v)
+        if not isinstance(data.get("noteQuiz"), dict):
+            data["noteQuiz"] = dict(defaults["noteQuiz"])
+        if not isinstance(data["noteQuiz"].get("classes"), dict):
+            data["noteQuiz"]["classes"] = {}
         return data
     except Exception:
         return defaults

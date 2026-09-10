@@ -5,16 +5,22 @@ hits localhost — no tunnel needed for this leg.
 """
 
 import logging
+import os
 import time
 
 import requests
 
 log = logging.getLogger(__name__)
 
-CLASSROOM_API_URL = "http://localhost:8787/classroom-latest"
-CLASSROOM_ASSIGNMENTS_URL = "http://localhost:8787/classroom-assignments"
-CLASSROOM_API_KEY = "JZ2hOfp64wm-YCaacMmQ0Oxtf5hZVgdD46vXyYpCsq0"  # must match api_server.py
+CLASSROOM_API_URL = os.environ.get("CLASSROOM_API_URL", "http://localhost:8787/classroom-latest")
+CLASSROOM_ASSIGNMENTS_URL = os.environ.get("CLASSROOM_ASSIGNMENTS_URL", "http://localhost:8787/classroom-assignments")
+# MUST match api_server.py's CLASSROOM_API_KEY env var. Never hard-code here;
+# the install script writes this into ~/.bashrc-equivalent / .env on first run.
+CLASSROOM_API_KEY = os.environ.get("CLASSROOM_API_KEY", "")
 FRESHNESS_MAX_AGE_SECONDS = 3 * 60 * 60  # ignore stale data >3h old
+
+if not CLASSROOM_API_KEY:
+    log.warning("CLASSROOM_API_KEY not set — Classroom API requests will be rejected.")
 
 
 def fetch_classroom_payload():

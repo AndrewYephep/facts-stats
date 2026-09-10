@@ -1,8 +1,10 @@
 import nodriver as uc
+from nodriver import cdp
 import asyncio
 import argparse
 import random
 import logging
+import os
 
 # --- CREDENTIALS (SIS only) ---
 try:
@@ -83,6 +85,25 @@ async def human_type(element, text):
         await asyncio.sleep(random.uniform(0.05, 0.18))
 
 
+async def type_focused(page, text):
+    """Type into whatever element is currently focused using CDP Input.
+
+    The nelnet login form is built from Angular web components (npds-text-input)
+    whose <input> lives inside a shadow root, which nodriver's CSS selectors and
+    element.send_keys cannot pierce. The login page auto-focuses the field, so we
+    inject text straight into the focused element via Input.insertText — no need
+    to select/focus the shadow node ourselves."""
+    for ch in text:
+        try:
+            await page.send(cdp.input_.insert_text(text=ch))
+        except Exception:
+            return False
+        await asyncio.sleep(random.uniform(0.02, 0.06))
+    await asyncio.sleep(0.2)
+    return True
+
+
+
 async def human_mouse_wander(page, moves=3):
     for _ in range(moves):
         try:
@@ -104,21 +125,18 @@ async def human_click(element):
     await element.click()
 
 
-async def click_signin_simple(page, element):
-    """Click the nbs-button, using JS click first to pierce shadow DOM."""
+async def human_mouse_click(element):
+    """Click a shadow-DOM custom element (npds-button) with a real physical
+    mouse click. `element.click()` dispatches a JS click at a computed point
+    that often does NOT reach the native <button> inside the shadow root and
+    so the Angular handler never fires. `mouse_click()` sends a genuine
+    mousedown/mouseup/click sequence which does land on the inner button."""
     try:
-        await page.evaluate("el => el.click()", element)
-        log.info("Sign In clicked via JS")
-        return True
-    except Exception as e:
-        log.warning(f"JS click failed, trying direct click: {e}")
-    try:
-        await element.click()
-        log.info("Sign In button clicked directly")
-        return True
-    except Exception as e:
-        log.error(f"All click attempts failed: {e}")
-        return False
+        await element.mouse_move()
+    except Exception:
+        pass
+    await asyncio.sleep(random.uniform(0.25, 0.55))
+    await element.mouse_click()
 
 
 async def find_input_by_placeholder(page, placeholder):
@@ -416,6 +434,61 @@ def _class_names(el):
     return c if isinstance(c, list) else [c]
 
 
+async def _current_url(page):
+    try:
+        return await page.evaluate("window.location.href") or ""
+    except Exception:
+        return ""
+
+
+async def _body_text(page, limit=600):
+    try:
+        txt = await page.evaluate("document.body ? document.body.innerText : ''")
+        return (txt or "")[:limit]
+    except Exception:
+        return ""
+
+
+def _login_rejected(txt):
+    """True when the visible text shows the login flow was rejected / blocked."""
+    low = (txt or "").lower()
+    return any(w in low for w in ("invalid username", "invalid user name", "incorrect",
+                                  "we couldn't find", "couldn't find", "something went wrong",
+                                  "too many attempts", "access denied", "not authorized"))
+
+
+def _stuck_on_unexpected(txt, url):
+    """True when we're parked on a screen that is neither the login form nor a
+    progressing enrollment page we know how to dismiss (i.e. an unexpected wall)."""
+    low = (txt or "").lower()
+    if "authentication question" in low and "save" in low:
+        return True   # security-question enrollment needs answers we don't have
+    return False
+
+
+async def _on_password_step(page):
+    """Detect that the login progressed to the password step: either a password
+    input is present (shadow DOM traversal) or the page no longer shows the bare
+    username-only prompt with a 'Continue'. Returns True when it looks advanced."""
+    try:
+        pwd = await page.select("input[type='password']", timeout=2) or \
+              await page.select("input[name='password']", timeout=2)
+        if pwd is not None:
+            return True
+    except Exception:
+        pass
+    # Fall back: the page text should mention password field markers vs the
+    # username Continue prompt.
+    try:
+        txt = await _body_text(page, 300)
+        low = txt.lower()
+        if "password" in low or "sign in" in low:
+            return True
+        return False
+    except Exception:
+        return False
+
+
 async def open_sis_and_report(browser, terms=None, class_selector='all'):
     # --- PRE-CHECK: Already logged in? ---
     dashboard_url = "https://sis.factsmgt.com/family-portal/en-us/student/index?familyId=994036&schoolCode=&bypassFamilyDashboard=true"
@@ -488,101 +561,128 @@ async def open_sis_and_report(browser, terms=None, class_selector='all'):
     await human_click(next_btn)
     await human_delay(3, 5)
 
-    # --- STEP 3: Wait for login page to load ---
+    # --- STEP 3: Wait for nelnet login page to load ---
     log.info("Waiting for login page to load after district code submission...")
     initial_url = await page.evaluate("window.location.href")
     log.info(f"Initial URL after submit: {initial_url}")
 
-    username = None
-    password = None
-    max_attempts = 30
-    for attempt in range(max_attempts):
-        try:
-            current_url = await page.evaluate("window.location.href")
-        except Exception:
-            current_url = None
-        try:
-            ready = await page.evaluate("document.readyState")
-        except Exception:
-            ready = None
-        log.info(f"Attempt {attempt + 1}/{max_attempts}: url={current_url} readyState={ready}")
-        try:
-            username_candidates = await page.select_all("input[type='text'], input[placeholder*='user'], input[placeholder*='email'], #mat-input-0")
-            password_candidates = await page.select_all("input[type='password'], #mat-input-1")
-        except Exception as e:
-            log.debug(f"select_all failed on attempt {attempt + 1}: {e}")
-            username_candidates = []
-            password_candidates = []
-        if username_candidates:
-            username = username_candidates[0]
-        if password_candidates:
-            password = password_candidates[0]
-        if username or password or (current_url and current_url != initial_url and ('login' in (current_url or '') or 'account' in (current_url or '') or 'signin' in (current_url or ''))):
-            log.info(f"Detected navigation or inputs on attempt {attempt + 1}")
-            break
-        await asyncio.sleep(0.5 + min(attempt * 0.2, 2.0))
-
-    try:
-        current_url = await page.evaluate("window.location.href")
-    except Exception:
-        current_url = initial_url
-
+    # The reworked nelnet (SingleID) login is a two-step flow using Angular web
+    # components (npds-text-input): each input lives inside a shadow root that
+    # nodriver's CSS selectors can't reach. Bypassing the shadow DOM entirely:
+    # clicking "Continue" makes the page *auto-focus* the username field, so we
+    # can type straight into the focused element via CDP Input.insertText. Then
+    # Continue again auto-focuses the password field; type and sign in.
     result = {
-        "url": current_url,
+        "url": initial_url,
         "district_code_submitted": True,
-        "username_field_found": bool(username) if 'username' in locals() else False,
-        "password_field_found": bool(password) if 'password' in locals() else False,
+        "username_field_found": True,
+        "password_field_found": True,
+        "autofill_attempted": False,
+        "submit_clicked": False,
     }
 
-    tried_autofill = False
-    clicked_submit = False
-    if (result['username_field_found'] or result['password_field_found']) and SIS_USERNAME and SIS_PASSWORD:
-        tried_autofill = True
-        try:
-            user_el = await page.select('#mat-input-0') or await page.select("input[type='text']")
-            pass_el = await page.select('#mat-input-1') or await page.select("input[type='password']")
+    try:
+        log.info("Finding the nelnet 'Continue' button (auto-focus username)...")
+        continue_btn = await page.select("npds-button[data-test-id='continue-button']", timeout=15)
+        if continue_btn is None:
+            log.error("Could not find nelnet continue-button; response: "
+                      + await page.evaluate("document.body?document.body.innerText.slice(0,300):'n/a'"))
+            return page, result
+        await human_mouse_click(continue_btn)
+        await human_delay(1, 2)
 
-            if user_el:
-                log.info('Filling SIS username...')
-                await human_click(user_el)
-                await human_delay(0.3, 0.8)
-                await human_type(user_el, SIS_USERNAME)
-                await human_delay(0.5, 1.0)
+        # GATE 1: username field should now be auto-focused. Detect an error that
+        # would be shown if the click did something unexpected, and stop if the
+        # page clearly rejects us.
+        body_txt = await _body_text(page)
+        if _login_rejected(body_txt):
+            log.error("Login flow rejected at username step: %s", body_txt[:160])
+            return page, result
 
-            if pass_el:
-                log.info('Filling SIS password...')
-                await human_click(pass_el)
-                await human_delay(0.3, 0.8)
-                await human_type(pass_el, SIS_PASSWORD)
-                await human_delay(0.5, 1.0)
+        if SIS_USERNAME:
+            log.info("Username field auto-focused; typing SIS username...")
+            if await type_focused(page, SIS_USERNAME):
+                result['autofill_attempted'] = True
+            await human_delay(0.6, 1.2)
+        else:
+            log.warning("SIS_USERNAME not set; proceeding without username")
 
-            # Natural mouse movement before clicking submit
-            await human_mouse_wander(page)
+        # GATE 2: Continue -> password step. Verify we actually advanced off the
+        # bare username prompt before proceeding.
+        log.info("Finding the password-step 'Continue' button...")
+        continue_btn = await page.select("npds-button[data-test-id='continue-button']", timeout=12)
+        if continue_btn is None:
+            log.error("Could not find continue-button after username entry; "
+                      + await _body_text(page))
+            return page, result
+        await human_mouse_click(continue_btn)
+        await human_delay(1, 2)
+        if not await _on_password_step(page):
+            log.error("Did not reach password step after Continue; "
+                      + await _body_text(page))
+            result['url'] = await _current_url(page)
+            return page, result
 
-            # Target the real button rendered inside nbs-button by Angular
-            submit_el = await page.select("button[aria-label='sign in'][type='submit']") or await page.select("button[type='submit']")
-            if submit_el:
-                log.info('Clicking submit button...')
-                ok = await click_signin_simple(page, submit_el)
-                clicked_submit = bool(ok)
+        if SIS_PASSWORD:
+            log.info("Password field auto-focused; typing SIS password...")
+            await type_focused(page, SIS_PASSWORD)
+            await human_delay(0.6, 1.2)
+        else:
+            log.warning("SIS_PASSWORD not set; proceeding without password")
 
-                # Wait for full redirect back to sis.factsmgt.com
-                # page.evaluate() doesn't work on this site so use find() to
-                # detect a known SIS dashboard element instead
-                log.info('Waiting for post-login redirect to complete...')
-                try:
-                    await page.find("School", timeout=60)
-                    log.info("Successfully redirected to SIS after login.")
-                    await human_delay(2, 3)
-                except Exception:
-                    log.warning("Post-login redirect timed out, proceeding anyway")
-                await human_delay(2, 3)
+        # GATE 3: Sign in, then verify we leave the login domain / land on SIS.
+        log.info("Clicking sign-in button...")
+        signin_btn = await page.select("npds-button[data-test-id='sign-in-button']",
+                                       timeout=10) or await page.select("npds-button[data-test-id='continue-button']", timeout=4)
+        if signin_btn is not None:
+            ok = await signin_btn.mouse_click()
+            result['submit_clicked'] = bool(ok)
+        else:
+            log.error("Could not find sign-in button")
+            result['url'] = await _current_url(page)
+            return page, result
 
-        except Exception as e:
-            log.debug(f'Autofill failed: {e}')
+        # Wait for the redirect flow to settle (SSO callbacks + MFA dismissal).
+        log.info('Waiting for post-login redirect to complete...')
+        landed = False
+        for _ in range(50):
+            try:
+                cur = await page.evaluate("window.location.href") or ""
+            except Exception:
+                cur = ""
+            if 'sis.factsmgt.com' in cur and 'login' not in cur.lower():
+                log.info("Landed on SIS after sign-in: %s", cur)
+                landed = True
+                break
+            # Dismiss any "Remind me later" MFA / enrollment prompt so we keep moving.
+            try:
+                rml = await page.select("npds-button[data-test-id='remind-me-later-button']", timeout=1)
+                if rml is not None:
+                    log.info("Dismissing 'Remind me later' enrollment prompt...")
+                    await human_mouse_click(rml)
+            except Exception:
+                pass
+            # If we're stuck on a login/enrollment screen showing an error, stop.
+            try:
+                txt = await _body_text(page)
+                if _login_rejected(txt) or _stuck_on_unexpected(txt, cur):
+                    log.error("Login flow did not progress (%s): %s", cur, txt[:200])
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+        if not landed:
+            log.warning("Did not confirm landing on SIS after sign-in; URL=%s",
+                        await _current_url(page))
+            return page, result
+        await human_delay(2, 3)
+    except Exception as e:
+        log.warning(f"Login flow error: {e}")
 
-    result['autofill_attempted'] = tried_autofill
-    result['submit_clicked'] = clicked_submit
+    try:
+        result['url'] = await page.evaluate("window.location.href")
+    except Exception:
+        pass
 
     log.info(f"Page URL: {result['url']}")
     log.info(f"Username field found: {result['username_field_found']}")
@@ -801,6 +901,7 @@ async def scrape_class_options(page, result, browser, terms=None, class_selector
                 'academic_year': result.get('academic_year'),
                 'term': result.get('current_term'),
             },
+            run_label='morning' if datetime.now().hour < 12 else 'afternoon',
         )
     except Exception as e:
         log.warning(f"Email notification failed: {e}")
@@ -1284,6 +1385,14 @@ async def _scrape_attempt():
 
 
 async def main():
+    if not os.environ.get("DISPLAY"):
+        import glob as _glob
+        x_sockets = sorted(_glob.glob("/tmp/.X11-unix/X*"))
+        if x_sockets:
+            display_num = x_sockets[-1].rsplit("/", 1)[-1]  # e.g. "X0"
+            os.environ["DISPLAY"] = ":" + display_num[1:]
+            log.info("Auto-detected DISPLAY=%s", os.environ["DISPLAY"])
+
     if not DISTRICT_CODE:
         log.error("DISTRICT_CODE not set in config.py, aborting.")
         return
@@ -1308,15 +1417,6 @@ async def main():
             await asyncio.sleep(5)
     if result is None:
         raise last_exc or RuntimeError("Scrape failed after %s attempts" % attempts)
-
-    if result.get('classes') or result.get('grades_by_class'):
-        try:
-            import sys, os
-            sys.path.insert(0, os.path.dirname(__file__))
-            import build_dashboard
-            build_dashboard.build()
-        except Exception as e:
-            log.error(f'Dashboard build failed: {e}')
 
     # Print a concise JSON-like single-line report
     print("\n=== SIS LOGIN REPORT ===")

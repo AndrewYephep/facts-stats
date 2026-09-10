@@ -8,10 +8,17 @@
  * (piPostAssignments) so the dashboard calendar shows real Classroom due dates.
  */
 
+// ─── SECRETS ─────────────────────────────────────────────────────────────────
+// Both of these come from Script Properties (Project Settings → Script
+// properties), NOT from this source file. Set them once in the Apps Script
+// editor; never commit real values to the repo.
+const PROPS = PropertiesService.getScriptProperties();
+const SHARED_SECRET   = PROPS.getProperty("TRILIUM_BRIDGE_SECRET");   // x-bridge-secret for the Trilium endpoint
+const PI_API_KEY      = PROPS.getProperty("PI_API_KEY");              // matches CLASSROOM_API_KEY on the Pi (X-API-Key)
+
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const CONFIG = {
   triliumBase: "https://trilium.andrewhepworth.me/custom/classroom",
-  sharedSecret: "replace_with_a_long_random_string",
 
   courseIds: [],
 
@@ -22,7 +29,6 @@ const CONFIG = {
 
   // ── Pi combined-email bridge ──
   piApiUrl: "https://classroom-api.andrewhepworth.me/classroom-update",
-  piApiKey: "JZ2hOfp64wm-YCaacMmQ0Oxtf5hZVgdD46vXyYpCsq0", // must match CLASSROOM_API_KEY on the Pi
 };
 
 // ─── HTTP HELPERS (NO HMAC) ──────────────────────────────────────────────────
@@ -42,7 +48,7 @@ function triliumPost(path, payload) {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload),
-    headers: { "x-bridge-secret": CONFIG.sharedSecret },
+    headers: { "x-bridge-secret": SHARED_SECRET },
     muteHttpExceptions: true,
   });
   if (res.getResponseCode() !== 200) {
@@ -677,7 +683,7 @@ function postAssignmentsToPi_(runLabel, dueToday, dueTomorrow) {
   const options = {
     method: "post",
     contentType: "application/json",
-    headers: { "X-API-Key": CONFIG.piApiKey },
+    headers: { "X-API-Key": PI_API_KEY },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
@@ -705,7 +711,7 @@ function piPostAssignments(assignments) {
   const options = {
     method: "post",
     contentType: "application/json",
-    headers: { "X-API-Key": CONFIG.piApiKey },
+    headers: { "X-API-Key": PI_API_KEY },
     payload: JSON.stringify({ assignments: assignments }),
     muteHttpExceptions: true,
   };

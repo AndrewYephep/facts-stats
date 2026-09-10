@@ -53,11 +53,27 @@ function ringPct(pct, size, color, mini) {
 }
 
 // ─── LEVELS-BASED REVIEW STATE ──────────────────────────────────
+// Progress now persists to the backend (SQLite) via /api/levels/state.
+// A synchronous in-memory map (mirrored to localStorage) keeps the existing
+// sync reads/set-card renders working, while writes also flush to the server.
+
+let _levelsCache = null;
+let _levelsPending = new Map();   // setUrl -> {method, state} queued for the server
+
+function _levelsMemoryMap() {
+  if (_levelsCache) return _levelsCache;
+  try { _levelsCache = JSON.parse(localStorage.getItem(LEVELS_STORE) || '{}'); }
+  catch (err) { _levelsCache = {}; }
+  return _levelsCache;
+}
+
 function loadLevelsMap() {
-  try { return JSON.parse(localStorage.getItem(LEVELS_STORE) || '{}'); } catch (err) { return {}; }
+  return _levelsMemoryMap();
 }
 function saveLevelsMap(map) {
+  _levelsCache = map;
   try { localStorage.setItem(LEVELS_STORE, JSON.stringify(map)); } catch (err) {}
+  flushLevelsPending();
 }
 function getLevelState(setUrl) {
   return setUrl ? loadLevelsMap()[setUrl] || null : null;
@@ -68,12 +84,61 @@ function saveLevelState(setUrl, st) {
   const map = loadLevelsMap();
   map[setUrl] = st;
   saveLevelsMap(map);
+  _levelsPending.set(setUrl, { method: 'PUT', state: st });
+  scheduleLevelsFlush();
 }
 function deleteLevelState(setUrl) {
   if (!setUrl) return;
   const map = loadLevelsMap();
   delete map[setUrl];
   saveLevelsMap(map);
+  _levelsPending.set(setUrl, { method: 'DELETE' });
+  scheduleLevelsFlush();
+}
+
+// ── Server sync (fire-and-forget) ───────────────────────────────
+let _levelsFlushTimer = null;
+function scheduleLevelsFlush() {
+  if (_levelsFlushTimer) return;
+  _levelsFlushTimer = setTimeout(() => { _levelsFlushTimer = null; flushLevelsPending(); }, 400);
+}
+async function flushLevelsPending() {
+  if (!_levelsPending.size) return;
+  const items = [..._levelsPending.entries()];
+  _levelsPending.clear();
+  for (const [setUrl, { method, state }] of items) {
+    try {
+      const res = await fetch('/api/levels/state' + (method === 'DELETE' ? '/' + encodeURIComponent(setUrl) : ''), {
+        method,
+        headers: method === 'PUT' ? { 'Content-Type': 'application/json' } : undefined,
+        body: method === 'PUT' ? JSON.stringify({ setUrl, state }) : undefined,
+      });
+      if (!res.ok) console.error('levels state sync failed', setUrl, res.status);
+    } catch (err) {
+      console.error('levels state sync error', setUrl, err);
+    }
+  }
+}
+
+// Load all persisted levels state from the backend into the memory/localStorage
+// cache. Called once during app init (background) and never blocks renders.
+async function preloadLevelsState() {
+  try {
+    const res = await fetch('/api/levels/state?_=' + Date.now());
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const server = (data && data.states) || {};
+    const map = _levelsMemoryMap();
+  // Server is authoritative; merge (server wins) but keep any local-only sets.
+  for (const [setUrl, st] of Object.entries(server)) map[setUrl] = st;
+  saveLevelsMap(map);
+  // Refresh any set cards already on screen so level rings stay accurate.
+  if (typeof renderReviewGrid === 'function' && state.blooketLoaded && document.getElementById('review-sets')) {
+    renderReviewGrid(state.blooketClasses, state.blooketCustomSets);
+  }
+  } catch (err) {
+    console.error('preload levels state', err);
+  }
 }
 function initLevelState(n) {
   return {
@@ -202,10 +267,16 @@ function quizCurrentQuestion(ctx) {
   return ctx.questions[ctx.idx];
 }
 
-async function startQuiz(setUrl, fallbackTitle) {
+async function startQuiz(setUrl, fallbackTitle, chapterTitle, isLocal) {
   if (_quizCtx || !setUrl) return;
+  // Not-yet-published sets come through with the localKey instead of a
+  // https URL — keep using it so the saved questions still load locally.
+  const useLocal = !!isLocal || !/^https?:\/\//i.test(setUrl);
   try {
-    const res = await fetch('/api/blooket/quiz?url=' + encodeURIComponent(setUrl));
+    const quizUrl = useLocal
+      ? '/api/blooket/quiz?localKey=' + encodeURIComponent(setUrl)
+      : '/api/blooket/quiz?url=' + encodeURIComponent(setUrl);
+    const res = await fetch(quizUrl);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed to load quiz');
     const raw = data.questions || [];
@@ -214,12 +285,13 @@ async function startQuiz(setUrl, fallbackTitle) {
       return;
     }
     const title = data.title || fallbackTitle || 'Review quiz';
-    const chapterTitle = data.chapterTitle || '';
-    if (state.levelsEnabled) { startLevelsQuiz(setUrl, title, chapterTitle, raw); return; }
+    const chTitle = data.chapterTitle || chapterTitle || '';
+    if (state.levelsEnabled) { startLevelsQuiz(setUrl, title, chTitle, raw); return; }
     _quizCtx = {
       url: setUrl,
+      local: useLocal,
       title,
-      chapterTitle,
+      chapterTitle: chTitle,
       source: raw,
       questions: quizBuildQuestions(raw),
       idx: 0,
@@ -262,7 +334,11 @@ function startLevelsQuiz(setUrl, title, chapterTitle, raw) {
     title,
     chapterTitle,
     source: raw,
-    questions: raw,             // stable server order — lv.cards[i] maps to questions[i]
+    // Shuffle each question's options (and remap q.correct) so the
+    // correct answer doesn't sit in the same saved slot every round.
+    // lv.cards[i] still maps by index — the queue picks the question, then
+    // we render the shuffled options of that question.
+    questions: quizBuildQuestions(raw),
     lv: st,
     idx: 0,
     correctCount: 0,
@@ -361,6 +437,9 @@ function ensureQuizCss() {
   `;
   document.head.appendChild(s);
 }
+// Expose so other quiz surfaces (the daily note-quiz) can share the same
+// red-flash / green-pop animation styles.
+window._ensureQuizCss = ensureQuizCss;
 
 function renderQuizScreen() {
   const ctx = _quizCtx;

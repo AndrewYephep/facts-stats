@@ -4,17 +4,18 @@
    ================================================================ */
 
 
-function findSetInState(setUrl) {
+function findSetInState(id) {
+  if (!id) return null;
   for (const cls of (state.blooketClasses || [])) {
-    const found = (cls.sets || []).find(s => s.setUrl === setUrl);
+    const found = (cls.sets || []).find(s => s.setUrl === id || s.localKey === id);
     if (found) return found;
   }
-  return (state.blooketCustomSets || []).find(s => s.setUrl === setUrl) || null;
+  return (state.blooketCustomSets || []).find(s => s.setUrl === id || s.localKey === id) || null;
 }
 
 
-window.openSetDetail = function(setUrl) {
-  state.currentSetUrl = setUrl;
+window.openSetDetail = function(id) {
+  state.currentSetUrl = id;
   render();
 };
 
@@ -184,10 +185,13 @@ window.deleteQuestion = async function(qi) {
 };
 
 function renderSetDetailScreen() {
-  const setUrl = state.currentSetUrl;
-  if (!setUrl) return '';
-  const s = findSetInState(setUrl);
+  const id = state.currentSetUrl;
+  if (!id) return '';
+  const s = findSetInState(id);
   if (!s) return '<div class="p-6 text-gray-400">Set not found.</div>';
+  // Key levels by the same identifier used to open the set so unpublished
+  // (local-only) sets keep their progress across re-opens.
+  const levelKey = s.setUrl || s.localKey || id;
   const light = isLightTheme();
   const border = light ? '#d0d7e0' : '#22222e';
   const text = light ? '#101828' : '#f5f5f7';
@@ -195,8 +199,8 @@ function renderSetDetailScreen() {
   const qBg = light ? '#ffffff' : '#16161f';
   const qInner = light ? '#f9fafb' : '#0d0d16';
   const questions = s.questions || [];
-  const safeUrl = setUrl.replace(/'/g, "\\'");
-  const lvRaw = getLevelState(s.setUrl);
+  const safeUrl = id.replace(/'/g, "\\'");
+  const lvRaw = getLevelState(levelKey);
   const lvSt = lvRaw ? sanitizeLevelState(lvRaw, questions.length) : null;
   const lvCards = lvSt ? lvSt.cards : [];
   return `<div class="quiz-in max-w-5xl mx-auto px-1 sm:px-2 py-2 min-h-[62vh] flex flex-col">
@@ -320,9 +324,11 @@ function renderReviewGrid(classes, customSets) {
         <div class="text-xs text-gray-600 max-w-xs">${q ? 'Try a different search term.' : 'Link class notes in Settings → Class Notes, or build a custom quiz with the + button.'}</div>
       </div>
     </div>`;
+    window._nqRenderProgressBanner?.();
     return;
   }
-  container.innerHTML = `${classHtml}${customHtml}`;
+  container.innerHTML = `<div id="nq-progress-banner" class="col-span-1 lg:col-span-2"></div>${classHtml}${customHtml}`;
+  window._nqRenderProgressBanner?.();
 }
 
 function populateCustomBlooketTarget(classes, customSets) {
@@ -354,30 +360,82 @@ function renderCustomBlooketSets(customSets) {
 function renderBlooketClassCard(cls) {
   const color = cls._color || COLORS[0];
   const latest = cls.latest;
-  const sets = (cls.sets || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  const allSets = (cls.sets || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const expanded = !!state.expandedClasses[cls.classId];
+  const chapters = deriveChapters(cls);
+  const chapterIdx = state.chapterIndex[cls.classId] || 0;
+  const viewingAll = !chapters.length || chapterIdx === 0;
+  const sets = viewingAll ? allSets : (chapters[Math.min(chapterIdx, chapters.length - 1)]?.sets || []);
   const limit = 4;
   const visible = expanded ? sets : sets.slice(0, limit);
   const extra = sets.length - visible.length;
   const letter = escapeHtml((cls.shortName || cls.name || '?').trim().charAt(0).toUpperCase());
   const rows = visible.map(s => renderSetCard(s, color, latest && s.sourceNoteId === latest.noteId));
+  const curChapter = chapters[Math.min(chapterIdx, chapters.length - 1)];
+  const chapterTitle = viewingAll ? (latest?.title || cls.noteTitle || '') : (curChapter?.title || '');
+  const chapterNoteId = viewingAll ? (latest?.noteId || '') : (curChapter?.noteId || '');
+  const showNav = chapters.length >= 2;
 
   return `
-  <div class="review-class-section bg-[#12121b] border border-[#22222e] rounded-2xl overflow-hidden" data-class-id="${escapeHtml(cls.classId)}">
-    <div class="relative flex items-center gap-3 px-4 py-3.5 border-b border-[#22222e]" style="background:linear-gradient(90deg, ${color}16, transparent 62%)">
+  <div class="review-class-section bg-[#12121b] border border-[#22222e] rounded-2xl" data-class-id="${escapeHtml(cls.classId)}">
+    <div class="relative flex items-center gap-3 px-4 py-3.5 border-b border-[#22222e] overflow-hidden" style="background:linear-gradient(90deg, ${color}16, transparent 62%)">
       <span class="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0" style="background:${color}24; color:${color}">${letter}</span>
       <div class="min-w-0 flex-1">
         <div class="text-sm font-semibold text-white truncate">${escapeHtml(cls.name)}</div>
-        <div class="text-[11px] text-gray-500 truncate">${sets.length} set${sets.length === 1 ? '' : 's'}${latest ? ' · <a href="' + escapeHtml(triliumWebUrl(latest.noteId)) + '" target="_blank" rel="noopener" title="Open the latest notes in Trilium" class="hover:text-blue-400 hover:underline underline-offset-2 transition-colors">' + escapeHtml(latest.title) + '</a>' : (cls.noteTitle ? ' · ' + escapeHtml(cls.noteTitle) : ' · no chapter notes')}</div>
+        <div class="flex items-center gap-1 min-w-0">
+          ${showNav ? `<button type="button" onclick="event.stopPropagation(); chapterNav('${jsStr(cls.classId)}', -1)" class="w-4 h-4 rounded flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors flex-shrink-0" title="Previous chapter">${icon('chevronLeft','w-3 h-3')}</button>` : ''}
+          <div class="text-[11px] text-gray-500 truncate min-w-0">
+            ${chapterNoteId ? `<a href="${escapeHtml(triliumWebUrl(chapterNoteId))}" target="_blank" rel="noopener" title="Open ${escapeHtml(chapterTitle)} in Trilium" class="hover:text-blue-400 hover:underline underline-offset-2 transition-colors">${escapeHtml(chapterTitle || 'chapter')}</a>` : `<span>${escapeHtml(chapterTitle || 'no chapter notes')}</span>`}
+            ${showNav ? `<span class="text-gray-600 ml-0.5">${chapterIdx + 1}/${chapters.length}</span>` : ''}
+          </div>
+          ${showNav ? `<button type="button" onclick="event.stopPropagation(); chapterNav('${jsStr(cls.classId)}', 1)" class="w-4 h-4 rounded flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors flex-shrink-0" title="Next chapter">${icon('chevronRight','w-3 h-3')}</button>` : ''}
+        </div>
       </div>
-      <button type="button" onclick="startClassFlow('${jsStr(cls.classId)}')"
-        title="Generate a new quiz from ${latest ? escapeHtml(latest.title) : 'this class'}"
+      <button type="button" onclick="startChapterFlow('${jsStr(cls.classId)}', '${jsStr(chapterNoteId)}')"
+        title="Generate a new quiz from ${escapeHtml(chapterTitle || 'this chapter')}"
         class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-purple-300 hover:bg-purple-500/10 transition-all flex-shrink-0">${icon('sparkle', 'w-3.5 h-3.5')}</button>
       <div class="blooket-progress absolute inset-0 flex items-center justify-center px-16 pointer-events-none" data-class-id="${escapeHtml(cls.classId)}"></div>
     </div>
     <div class="p-3">
       ${sets.length ? `<div class="space-y-2">${rows.join('')}</div>` : '<div class="text-xs text-gray-600 px-1 py-2">No quizzes yet — use the sparkle button or the + button to create one.</div>'}
       ${extra > 0 ? `<button type="button" onclick="expandClassSets('${jsStr(cls.classId)}')" class="w-full mt-2 text-xs font-medium text-gray-500 hover:text-gray-300 transition-colors py-1.5">+ ${extra} more set${extra === 1 ? '' : 's'}</button>` : ''}
+      ${renderNoteQuizSection(cls)}
     </div>
   </div>`;
+}
+
+// Clean per-class section for today's note quizzes: a short title and the
+// question count, plus a quiet "Generate" action for enabled classes.
+function renderNoteQuizSection(cls) {
+  const cid = String(cls.classId);
+  const today = (state.noteQuizToday || {})[cid] || [];
+  const enabled = !!((state.noteQuiz && state.noteQuiz.classes) ? state.noteQuiz.classes[cid] : null)?.enabled;
+  if (!today.length && !enabled) return '';
+  const items = today.map(s => {
+    const menuOpen = state.noteQuizMenuOpen === s.id;
+    return `
+    <div class="relative">
+      <div class="w-full text-left px-3 py-2 rounded-lg bg-[#0a0a0f] border border-[#22222e] hover:border-blue-500/40 transition-colors flex items-center gap-2.5 cursor-pointer" onclick="window.openNoteQuiz(${s.id})" title="Open ${escapeHtml(s.title || s.chapterTitle || 'note quiz')}">
+        <span class="w-7 h-7 rounded-lg bg-blue-500/15 border border-blue-500/30 text-blue-300 flex items-center justify-center flex-shrink-0">${icon('sparkle','w-3.5 h-3.5')}</span>
+        <span class="flex-1 min-w-0 text-[13px] text-gray-200 truncate">${escapeHtml(s.title || s.chapterTitle || 'Note quiz')}</span>
+        <span class="text-[11px] text-gray-500 flex-shrink-0 tabular-nums">${s.questionCount || 0} questions</span>
+        <button type="button" onclick="event.stopPropagation(); toggleNoteQuizMenu(${s.id})" class="p-1 rounded-md text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors flex-shrink-0" title="More">${icon('dots','w-3.5 h-3.5')}</button>
+      </div>
+      ${menuOpen ? `
+      <div class="absolute right-0 top-full z-50 mt-1 bg-[#16161f] border border-[#22222e] rounded-xl shadow-xl py-1 min-w-[140px]">
+        <button onclick="event.stopPropagation(); deleteNoteQuiz(${s.id})" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-[#22222e] hover:text-white flex items-center gap-2 transition-colors">${icon('trash','w-3 h-3')} Delete</button>
+        <button onclick="event.stopPropagation(); recreateNoteQuiz(${s.id}, '${jsStr(s.chapterNoteId || '')}', '${jsStr(cid)}')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-[#22222e] hover:text-white flex items-center gap-2 transition-colors">${icon('sparkle','w-3 h-3')} Recreate</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+  return `
+    <div class="mt-3 pt-3 border-t border-[#22222e]">
+      <div class="flex items-center justify-between mb-1.5">
+        <div class="text-[11px] uppercase tracking-wider text-gray-500">Note quizzes</div>
+        ${enabled ? `<button type="button" data-nq-manual-btn="${jsStr(cid)}" onclick="window.openNoteQuizForClass('${jsStr(cid)}')" title="Generate today's note quiz from this class's notes"
+          class="inline-flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors">${icon('sparkle','w-3 h-3')} Generate</button>` : ''}
+      </div>
+      <div class="space-y-1.5">${items}</div>
+      ${!today.length ? '<div class="text-[11px] text-gray-600 px-1">No quiz generated yet today.</div>' : ''}
+    </div>`;
 }

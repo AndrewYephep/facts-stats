@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GradeTrack — System Map</title>
+<title>Academic OS — System Map</title>
 <style>
   :root {
     --bg: #07070c;
@@ -376,8 +376,8 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
     </div>
     <div>
-      <h1>GradeTrack</h1>
-      <div class="sub">LIVE PIPELINE MAP</div>
+      <h1>Academic OS</h1>
+      <div class="sub">LIVE SYSTEM MAP</div>
     </div>
   </div>
 
@@ -467,7 +467,9 @@ const ICONS = {
   screen: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
-  cloud: '<path d="M17.5 19a4.5 4.5 0 0 0 .4-8.98 7 7 0 0 0-13.3 1.95A4.6 4.6 0 0 0 6 19h11.5z"/>'
+  cloud: '<path d="M17.5 19a4.5 4.5 0 0 0 .4-8.98 7 7 0 0 0-13.3 1.95A4.6 4.6 0 0 0 6 19h11.5z"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  layers: '<path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/>'
 };
 
 let GRAPH = null;
@@ -489,6 +491,8 @@ const STATE = {
   statusPolls: 0,
   statusFails: 0,
   lastEventSeq: 0,
+  lastBlooketPhase: null,
+  lastTimers: null,
   tipTimer: null
 };
 const VIEW = { x: 0, y: 0, k: 1 };
@@ -682,7 +686,7 @@ function buildWorld() {
   fitView();
   STATE.edges = GRAPH.edges.map(e => {
     const path = STATE.edgeEls[e.id].path;
-    return { edge: e, intensity: 0, acc: 0, len: path.getTotalLength(), geo: STATE.edgeEls[e.id].geo };
+    return { edge: e, burst: 0, acc: 0, len: path.getTotalLength(), geo: STATE.edgeEls[e.id].geo };
   });
 }
 
@@ -790,6 +794,58 @@ function describeNode(n, sn, st) {
     return { main, doing, cls };
   }
 
+  if (n.id === "blooket") {
+    const busy = sn.running;
+    const ph = (sn.phase || "idle").toUpperCase();
+    main = busy ? "working — " + ph : "job " + (sn.queued ? "queued · " + sn.queued : "idle");
+    doing = sn.status ? sn.status : (sn.queued ? sn.queued + " job" + (sn.queued === 1 ? "" : "s") + " waiting" : "generate from class note · custom");
+    cls = busy ? "state-busy" : (sn.queued ? "state-warn" : "state-running");
+    return { main, doing, cls };
+  }
+
+  if (n.id === "scheduler") {
+    const nq = st.noteQuiz || {};
+    const firedN = Object.keys(nq.lastFired || {}).length;
+    main = sn.activeTimers ? sn.activeTimers + " timer" + (sn.activeTimers === 1 ? "" : "s") + " armed" : "no timers";
+    doing = firedN ? firedN + " fired today · set generation on endTime" : "waits for class endTime";
+    cls = sn.activeTimers ? "state-warn" : "state-off";
+    return { main, doing, cls };
+  }
+
+  if (n.id === "trilium" || n.id === "blooket_bot" || n.id === "facts_sis" || n.id === "appscript") {
+    main = "external endpoint";
+    doing = n.id === "trilium" ? "ETAPI · class chapter notes" : "VNC Chromium · blooket.com";
+    cls = "state-off";
+    return { main, doing, cls };
+  }
+
+  if (n.id === "blooket_sets") {
+    if (f && f.exists) {
+      main = fmtSize(f.size) + " · " + fmtAge(f.age);
+      doing = "saved class quiz sets";
+      cls = "state-warn";
+    } else { main = "missing"; cls = "state-down"; }
+    return { main, doing, cls };
+  }
+
+  if (n.id === "note_quiz_db") {
+    if (f && f.exists) {
+      main = fmtSize(f.size) + " · " + fmtAge(f.age);
+      doing = "sqlite · sets + attempts";
+      cls = "state-warn";
+    } else { main = "missing"; cls = "state-down"; }
+    return { main, doing, cls };
+  }
+
+  if (n.id === "auth") {
+    if (f && f.exists) {
+      main = "saved · " + fmtAge(f.age);
+      doing = "username + bcrypt hash";
+      cls = "state-warn";
+    } else { main = "missing"; cls = "state-down"; }
+    return { main, doing, cls };
+  }
+
   if (n.kind === "library") {
     if (n.id === "ai") {
       main = n.id === "ai" && sn.configured ? "ollama connected" : "no API key";
@@ -888,12 +944,19 @@ function detectFileFlash(st) {
         setTimeout(() => el.classList.remove("flash"), 2000);
         pushTicker(id, f.size ? f.size + " bytes" : "", f.name || id + ".json");
       }
+      fireFileFlow(id, f.size);   // real data was written → burst the incoming edges
     }
     STATE.prevFileMtime[id] = f.mtime;
   });
 }
 
 function applyStatus(st) {
+  if (!st || typeof st.nodes !== "object" || !st.nodes) {
+    // No sampling data yet (monitor just started, or a transient sampling error).
+    // Keep whatever we last rendered; the next good poll will repaint.
+    STATE.status = st || null;
+    return;
+  }
   STATE.status = st;
   STATE.statusPolls++;
 
@@ -919,13 +982,57 @@ function applyStatus(st) {
     if (ev.n > maxSeq) maxSeq = ev.n;
     if (ev.n <= STATE.lastEventSeq) continue;
     pushTicker(ev.node, ev.text, "", ev.kind === "log");
+    // Real transfer events drive edge bursts — on the exact data-carrying edge.
+    // Events that carry their own explicit edge list (push activity, flows) burst
+    // precisely those; everything else falls back to the known lane maps.
+    if (ev.edges && ev.edges.length) {
+      if (ev.kind === "flow") burstMany(ev.edges, 1);
+      else ev.edges.forEach(id => setBurst(id, 1));
+    } else if (ev.node === "scraper") {
+      if (/scrape finished/.test(ev.text)) {
+        burstMany(SCRAPE_LANE, 1);
+        burstMany(SCRAPE_TAIL, 1);   // post-scrape analytics/email/ai writes
+      } else if (/scrape started/.test(ev.text)) {
+        burstMany(SCRAPE_LANE, 1);
+      }
+    } else if (ev.node === "scheduler") {
+      burstMany(SCHEDULER_LANE, 1);
+    } else if (ev.node === "blooket") {
+      if (/generating|started/.test(ev.text)) burstMany(BLOOKET_GENERATE, 1);
+      else if (/publishing/.test(ev.text)) burstMany(BLOOKET_PUBLISH, 1);
+      else burstMany(BLOOKET_GENERATE.concat(BLOOKET_PUBLISH), 1);
+    }
   }
   STATE.lastEventSeq = maxSeq;
 
+  // Event-style transitions for the new live sources (self-derived on the client)
+  // Blooket phase
+  if (st.blooket) {
+    const ph = st.blooket.phase || "idle";
+    if (ph !== STATE.lastBlooketPhase) {
+      const prev = STATE.lastBlooketPhase || "idle";
+      STATE.lastBlooketPhase = ph;
+      if (ph === "generating" && prev === "idle") pushTicker("blooket", "job started · generating questions");
+      else if (ph === "publishing") pushTicker("blooket", "publishing… Chromium bot");
+      else if (ph === "done") pushTicker("blooket", "job done · " + (st.blooket.result && st.blooket.result.setUrl || "set ready"));
+      else if (ph === "failed") pushTicker("blooket", "job FAILED");
+      if (ph === "generating") burstMany(BLOOKET_GENERATE, 1);
+      else if (ph === "publishing") burstMany(BLOOKET_PUBLISH, 1);
+      else if (ph === "done") burstMany(BLOOKET_PUBLISH, 0.7);
+    }
+  }
+  // Scheduler timer count
+  const nq = st.noteQuiz || {};
+  if (nq.activeTimers !== undefined && nq.activeTimers !== STATE.lastTimers) {
+    STATE.lastTimers = nq.activeTimers;
+    pushTicker("scheduler", nq.activeTimers + " note-quiz timer" + (nq.activeTimers === 1 ? "" : "s") + " armed");
+  }
+
   const meta = st.meta || {};
   const sett = st.settings || {};
+  const origin = s.scrapeOrigin ? " · " + s.scrapeOrigin : "";
   $("#hstat-sys").textContent =
-    "Q" + (sett.currentTerm || "") + " · goal " + (sett.goal || "—") + " · " +
+    "Q" + (sett.currentTerm || "") + " · goal " + (sett.goal || "—") + origin + " · " +
     (meta.sample_ms != null ? meta.sample_ms.toFixed(0) + "ms" : "—") + " sample · " +
     GRAPH.nodes.length + " nodes · " + GRAPH.edges.length + " flows";
 }
@@ -961,14 +1068,14 @@ function highlightEdges(nodeId, on) {
 }
 function showTip(e, hitEl) {
   const tip = $("#tip");
-  const intensity = STATE.edges.find(x => x.edge.id === e.id);
-  const i = intensity ? Math.round(intensity.intensity * 100) : 0;
+  const entry = STATE.edges.find(x => x.edge.id === e.id);
+  const flowing = entry ? (entry.burst || 0) > 0.05 : false;
   tip.innerHTML =
     '<div class="tip-title">' + esc(e.from === "browser" ? STATE.nodeById[e.from].label : e.from) + " → " +
     esc(e.to === "browser" ? STATE.nodeById[e.to].label : e.to) + "</div>" +
     '<div class="tip-flow">' + esc(e.label) + " · " + e.kind.toUpperCase() + "</div>" +
     (e.note ? '<div class="tip-note">' + esc(e.note) + "</div>" : "") +
-    '<div class="tip-note">current flow intensity: ' + i + "%</div>";
+    '<div class="tip-note">' + (flowing ? "data flowing now" : "idle · flows only on real transfer") + "</div>";
   tip.style.display = "block";
   positionTip();
 }
@@ -983,81 +1090,63 @@ function positionTip() {
 }
 window.addEventListener("pointermove", e => { STATE.lastPointer = { x: e.clientX, y: e.clientY }; });
 
-/* ---------------- particles ---------------- */
+/* ---------------- particles (real data flow only) ---------------- */
 
-function edgeIntensity(e, now) {
-  const st = STATE.status;
-  if (!st) return 0;
-  const nodes = st.nodes;
-  const dash = nodes.dashboard || {};
-  const apis = nodes.api_server || {};
-  const scr = nodes.scraper || {};
-  const running = id => !!(nodes[id] && nodes[id].running);
-  const fresh = (id, within) => { const f = st.files && st.files[id]; return !!(f && f.exists && f.age != null && f.age < within); };
-  const ok = id => !!(nodes[id] && nodes[id].health);
-  const cfg = id => !!(nodes[id] && nodes[id].configured);
-  const scraping = !!(scr.scrapeRunning || running("scraper"));
-  const serving = !!ok("dashboard");
-  const ep = name => { const s = dash.endpoints && dash.endpoints[name]; return !!(s && s.ok); };
-  let I = 0;
-  const id = e.id;
+// Edge flow is driven ONLY by real, observed data-transfer events. Nothing
+// animates on "could be flowing" inference or the monitor's own probes.
+// A burst is a level (0..1) that is set by a real event and decays away.
 
-  // ---- Ingest: FACTS ⇄ scraper (browser session) ----
-  if (id === "e01" || id === "e02") {
-    if (scraping) I = Math.max(I, 0.85);
-  }
-  // ---- scraper → data / post-scrape chains ----
-  else if (id === "e03" || id === "e04") { if (running("scraper")) I = Math.max(I, 0.85); }
-  else if (id === "e05" || id === "e06" || id === "e07") { if (scraping) I = Math.max(I, 0.6); }
-  // ---- data → dashboard reads ----
-  else if (id === "e08" || id === "e09") {
-    if (fresh("grades_data", 180)) I = Math.max(I, 0.7);
-    if (ep("computed")) I = Math.max(I, 0.35);  // snapshot pulled on every /api/computed request
-  }
-  else if (id === "e10") { if (serving || ep("settings")) I = Math.max(I, 0.35); }
-  else if (id === "e11") { if (cfg("ai") && serving) I = Math.max(I, 0.3); }
-  else if (id === "e12") { if (scr.autoScrapeEnabled || scraping) I = Math.max(I, 0.25); }
-  // ---- compute + analytics spine ----
-  else if (id === "e13" || id === "e14") { if (ep("computed")) I = Math.max(I, 0.6); }
-  else if (id === "e15") { if (ep("grades")) I = Math.max(I, 0.55); }
-  // ---- dashboard launches scrape ----
-  else if (id === "e16") { if (scraping) I = Math.max(I, 0.8); }
-  // ---- dashboard ↔ browser (site serving) ----
-  else if (id === "e17" || id === "e18") { if (serving) I = Math.max(I, 0.45); }
-  // ---- AI lane ----
-  else if (id === "e19") { if (serving && ep("insights")) I = Math.max(I, 0.5); }
-  else if (id === "e20") {
-    if (cfg("ai") && serving) I = Math.max(I, 0.35);              // AI arm connected while serving
-    if (fresh("ai_insights", 7200)) I = Math.max(I, 0.6);          // recent generation
-  }
-  else if (id === "e21") { if (scraping || fresh("ai_insights", 3600)) I = Math.max(I, 0.55); }
-  else if (id === "e22") {
-    if (ep("insights")) I = Math.max(I, 0.45);
-    if (fresh("ai_insights", 7200)) I = Math.max(I, 0.3);
-  }
-  // ---- classroom lane ----
-  else if (id === "e23") { if (fresh("classroom_latest", 86400)) I = Math.max(I, 0.35); }
-  else if (id === "e24") { if (apis.health && fresh("classroom_latest", 86400)) I = Math.max(I, 0.5); }
-  else if (id === "e25") {
-    if (apis.health) I = Math.max(I, 0.4);
-    if (fresh("classroom_latest", 10800)) I = Math.max(I, 0.45);
-  }
-  else if (id === "e26") { if (cfg("emailer") && fresh("classroom_latest", 86400)) I = Math.max(I, 0.4); }
-  // ---- email ----
-  else if (id === "e27") {
-    if (cfg("emailer") && serving) I = Math.max(I, 0.3);           // pipeline armed while serving
-    if (cfg("emailer") && fresh("grades_data", 600)) I = Math.max(I, 0.6);  // post-scrape report
-    if (scraping) I = Math.max(I, 0.7);                            // send at scrape tail
-  }
+const BURST_DECAY = 4.2;   // seconds for a burst to fade out
+const BURST_FADE = 1.4;    // CSS dash-flow fade seconds
 
-  // scrape surge wave traveling through the chain
-  if (scraping && e.chain != null) {
-    const t = now / 1000;
-    const wave = (Math.sin((t - e.chain * 0.55) / 0.9) + 1) / 2;
-    I = Math.max(I, wave * 0.95);
-  }
+// ----- Which edges genuinely carry data for a given real transfer. -----
+// Each lane is explicit: an edge animates ONLY if the data it represents is
+// actually moving on that edge right now — never the whole node's neighbors.
 
-  return clamp(I, 0, 1);
+// A file was written → the incoming edge that wrote it.
+const WRITE_EDGES = {
+  grades_data:      { from: "scraper",     edges: ["e03"] },
+  grades_history:   { from: "scraper",     edges: ["e04"] },
+  ai_insights:      { from: "ai",          edges: ["e21"] },
+  classroom_latest: { from: "api_server",  edges: ["e24"] },
+  blooket_sets:     { from: "blooket",     edges: ["e36", "e38"] },
+  note_quiz_db:     { from: "scheduler",   edges: ["e30", "e31"] },
+  settings:         { from: "dashboard",   edges: ["e18"] },
+  auth:             { from: null,          edges: [] },
+};
+
+// Active scrape core lane — data moving FACTS→scraper→data store.
+const SCRAPE_LANE = ["e01", "e02", "e03", "e04"];
+// Post-scrape conditionals — only a short burst, fired on scrape finish.
+const SCRAPE_TAIL = ["e05", "e06", "e07"];
+
+// Blooket pipeline per phase.
+const BLOOKET_GENERATE = ["e32", "e35", "e36"];  // dashboard→blooket→ollama→sets
+const BLOOKET_PUBLISH  = ["e37", "e38"];         // blooket→bot→sets
+
+// Scheduler fire.
+const SCHEDULER_LANE = ["e28", "e29", "e30", "e31"];
+
+function setBurst(edgeId, level) {
+  const entry = STATE.edges.find(x => x.edge.id === edgeId);
+  if (!entry) return;
+  entry.burst = Math.max(entry.burst || 0, Math.min(1, level || 1));
+  entry.acc = 0;               // reset particle counter so it fires immediately
+  const el = STATE.edgeEls[edgeId];
+  if (el) {
+    el.g.classList.add("hot");
+    el.path.classList.add("flow");
+  }
+}
+
+function burstMany(edgeIds, level) {
+  edgeIds.forEach(id => setBurst(id, level));
+}
+
+function fireFileFlow(nodeId, size) {
+  const spec = WRITE_EDGES[nodeId];
+  if (!spec || !spec.edges.length) return;
+  burstMany(spec.edges, size ? 1 : 0.7);
 }
 
 function spawnParticle(entry, color) {
@@ -1111,11 +1200,13 @@ function loop(now) {
     if (clockTick >= 1) {
       clockTick = 0;
       const st = STATE.status;
+      const nodes = st.nodes || {};
+      const files = st.files || {};
       GRAPH.nodes.forEach(n => {
         const el = STATE.nodeEls[n.id];
         if (!el) return;
-        const sn = st.nodes[n.id];
-        const f = st.files[n.id];
+        const sn = nodes[n.id];
+        const f = files[n.id];
         if (n.kind === "data" && f && f.exists) {
           const live = f.age + (now - STATE.ageBaseAt) / 1000;
           const text = fmtSize(f.size) + " · " + fmtAge(live);
@@ -1133,22 +1224,43 @@ function loop(now) {
       });
     }
 
-    // edges + particles
+    // edges: render real-flow bursts; particles only appear while a burst is live
+    const st = STATE.status;
+    const scraping = !!(st.scrape && st.scrape.running);
+    const bph = (st.blooket && st.blooket.phase) || "idle";
     STATE.edges.forEach(entry => {
-      const I = edgeIntensity(entry.edge, now);
-      entry.intensity += (I - entry.intensity) * 0.12;
-      const i = entry.intensity;
-      const el = STATE.edgeEls[entry.edge.id];
-      const active = i > 0.4;
-      el.path.classList.toggle("flow", active);
-      el.g.classList.toggle("hot", active);
-      el.path.setAttribute("stroke-opacity", (0.14 + i * 0.86).toFixed(3));
-      el.path.setAttribute("stroke-width", (1.2 + i * 1.9).toFixed(2));
+      const id = entry.edge.id;
+      const el = STATE.edgeEls[id];
+      let hold = 0;
+      // Real ongoing transfers only, on the exact edge each piece of data uses.
+      if (scraping && SCRAPE_LANE.indexOf(id) !== -1) hold = 1;
+      if (bph === "generating" && BLOOKET_GENERATE.indexOf(id) !== -1) hold = 1;
+      if (bph === "publishing" && BLOOKET_PUBLISH.indexOf(id) !== -1) hold = 1;
+
+      // decay the burst toward the held level
+      let level = entry.burst || 0;
+      if (hold > 0) {
+        level = level + (hold - level) * 0.3;   // ease up while active
+        entry.burst = level;
+        el.g.classList.add("hot");
+        el.path.classList.add("flow");
+      } else {
+        level -= dt / BURST_DECAY;
+        entry.burst = Math.max(0, level);
+        if (level <= 0) {
+          el.g.classList.remove("hot");
+          el.path.classList.remove("flow");
+        }
+      }
+
+      const active = level > 0.05;
+      el.path.setAttribute("stroke-opacity", active ? (0.5 + level * 0.5).toFixed(3) : 0.28);
+      el.path.setAttribute("stroke-width", active ? (1.6 + level * 1.5).toFixed(2) : 1.3);
       el.path.setAttribute("stroke-dasharray", active ? "2 4" : "5 7");
-      entry.acc += i * 2.1 * dt;
-      if (entry.acc >= 1) {
-        entry.acc -= 1;
-        spawnParticle(entry, entry.edge.color);
+
+      if (active) {
+        entry.acc += (0.6 + level) * 2.2 * dt;
+        if (entry.acc >= 1) { entry.acc -= 1; spawnParticle(entry, entry.edge.color); }
       }
     });
     updateParticles(dt);
@@ -1207,6 +1319,22 @@ function buildStats(n, st) {
     if (sn.payloadAge != null) add("payload age", fmtAge(sn.payloadAge), sn.payloadAge < 10800 ? "" : "warn");
   }
   if (n.id === "emailer") add("SMTP", sn.configured ? "ready" : "not configured", sn.configured ? "ok" : "bad");
+  if (n.id === "blooket") {
+    add("phase", (sn.phase || "idle").toUpperCase(), sn.running ? "warn" : "");
+    add("queued", sn.queued != null ? sn.queued + " pending" : "—");
+    if (sn.status) add("step", sn.status);
+    if (sn.cancelRequested) add("cancel", "requested", "warn");
+    if (sn.result && sn.result.setUrl) add("published", "yes", "ok");
+  }
+  if (n.id === "scheduler") {
+    const nq = st.noteQuiz || {};
+    add("timers", sn.activeTimers != null ? sn.activeTimers + " armed" : "—");
+    if (sn.lastRebuildAt) add("last rebuild", String(sn.lastRebuildAt).replace("T", " ").slice(5, 19));
+    const fired = Object.keys(nq.lastFired || {}).length;
+    add("fired today", fired + (fired === 1 ? " class" : " classes"));
+  }
+  if (n.id === "trilium") { add("etapi", "chapter notes source", "ok"); }
+  if (n.id === "blooket_bot") { add("mode", "Chromium over VNC"); }
   return stats.join("");
 }
 

@@ -30,6 +30,9 @@ APP_JS="$GRADETRACK/js/app.js"
 INDEX_HTML="$GRADETRACK/index.html"
 PY_SRC=("$GRADETRACK/dashboard_server.py" "$GRADETRACK/blooket_builder.py")
 PY_DST=("$PI_ROOT/dashboard_server.py" "$PI_ROOT/blooket_builder.py")
+# Repo-root helper scripts (installer + updater).
+SCRIPT_SRC=("$REPO_ROOT/install.sh" "$REPO_ROOT/update.sh")
+SCRIPT_DST=("$PI_ROOT/install.sh" "$PI_ROOT/update.sh")
 
 # --- Auto-detect: are we on the Pi mount? ------------------------------------
 # If the repo path lives under /home/ahepworth (the Pi mount on a Mac), edits
@@ -85,6 +88,13 @@ printf '\033[1mGradeTrack deploy\033[0m\n'
 printf '  repo:     %s\n' "$REPO_ROOT"
 printf '  target:   %s\n' "$TARGET_DESC"
 echo
+
+# Clean stale /tmp files (Chromium/nodriver profiles accumulate here)
+CLEANUP="$PI_ROOT/cleanup-tmp.sh"
+if [[ -x "$CLEANUP" ]]; then
+  run "$CLEANUP"
+  ok "/tmp cleaned"
+fi
 
 [[ -f "$APP_JS"      ]] || die "missing $APP_JS"
 [[ -f "$INDEX_HTML"  ]] || die "missing $INDEX_HTML"
@@ -149,6 +159,14 @@ if [[ $SKIP_PY -eq 0 && $PI_MOUNT -eq 0 ]]; then
   ok "Python scp'd to Pi"
 elif [[ $SKIP_PY -eq 0 ]]; then
   ok "Python already on Pi mount (no scp needed)"
+fi
+
+# Helper scripts (install.sh, update.sh) — only relevant when deploying to a
+# remote Pi; on a local mount they're already at $REPO_ROOT.
+if [[ $SKIP_FE -eq 0 && $PI_MOUNT -eq 0 ]]; then
+  for i in "${!SCRIPT_SRC[@]}"; do
+    [[ -f "${SCRIPT_SRC[$i]}" ]] && run scp "${SCRIPT_SRC[$i]}" "$PI_HOST:${SCRIPT_DST[$i]}"
+  done
 fi
 if [[ $PI_MOUNT -eq 1 ]]; then
   # Files are on the Pi mount, but the service runs on the Pi. If we can't sudo

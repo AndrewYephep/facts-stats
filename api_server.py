@@ -62,6 +62,13 @@ def _unauthorized():
     return jsonify({"error": "unauthorized"}), 401
 
 
+def _read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 @app.route("/classroom-update", methods=["POST"])
 def classroom_update():
     key = request.headers.get("X-API-Key")
@@ -124,6 +131,11 @@ def classroom_sync():
     if not key or not secrets.compare_digest(key, API_KEY):
         return _unauthorized()
 
+    raw = request.get_data(as_text=True)
+    log.info("classroom-sync received %d bytes, content-type=%s", len(raw), request.content_type)
+    if len(raw) > 0:
+        log.info("classroom-sync body preview: %s", raw[:500])
+
     payload = request.get_json(silent=True)
     if not payload or not isinstance(payload, dict):
         return jsonify({"error": "invalid or missing JSON body"}), 400
@@ -132,16 +144,38 @@ def classroom_sync():
     if not isinstance(assignments, list):
         return jsonify({"error": "expected an 'assignments' list"}), 400
 
+    # Merge with existing assignments (upsert by id) so multiple chunks
+    # from Apps Script accumulate instead of each POST overwriting the file.
+    existing = _read_json(CLASSROOM_ASSIGNMENTS_FILE) or {}
+    existing_map = {}
+    for a in (existing.get("assignments") or []):
+        aid = a.get("id")
+        if aid:
+            existing_map[str(aid)] = a
+
+    incoming_count = 0
+    for a in assignments:
+        aid = a.get("id")
+        if aid:
+            existing_map[str(aid)] = a
+            incoming_count += 1
+        else:
+            # No id — append (rare edge case)
+            existing_map[f"_new_{incoming_count}_{int(time.time())}"] = a
+            incoming_count += 1
+
+    merged = list(existing_map.values())
+
     record = {
-        "assignments": assignments,
-        "count": len(assignments),
+        "assignments": merged,
+        "count": len(merged),
         "received_at": time.time(),
         "received_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     CLASSROOM_ASSIGNMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     CLASSROOM_ASSIGNMENTS_FILE.write_text(json.dumps(record, indent=2))
 
-    return jsonify({"status": "ok", "stored": len(assignments)})
+    return jsonify({"status": "ok", "stored": len(merged), "incoming": incoming_count})
 
 
 @app.route("/classroom-assignments", methods=["GET"])

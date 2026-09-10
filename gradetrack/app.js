@@ -3913,7 +3913,7 @@ async function startBlooketGenerate() {
   await loadBlooketClasses(false);
   renderBlooketStepsInline({ phase: 'generating', exitCode: null, logs: ['Starting generation…'] });
   try {
-    const res = await fetch('/api/blooket/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ classId: ctx.classId, prompt, setUrl }) });
+    const res = await fetch('/api/blooket/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ classId: ctx.classId, prompt, setUrl, noteId: ctx.noteId || '' }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed to start generation');
     blooketPollTick();

@@ -32,17 +32,104 @@ def get_saved_insights():
     return {**saved, "insights": (saved.get("insights") or []) + (saved.get("manualInsights") or [])}
 
 
-def _ollama_request(payload, key):
+def _ollama_request(payload, key, timeout=180):
     request = Request(OLLAMA_CHAT_URL, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
-    with urlopen(request, timeout=60) as response:
+    with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _ollama_request_message(payload, key, timeout=300):
+    """Stream a chat completion and return the final assistant message dict.
+
+    The message includes content and any tool_calls the model produced, so
+    callers can rely on Ollama's built-in tool calling for structured output.
+    Streaming keeps the connection alive while tokens are still arriving, so a
+    slow model won't trip the read timeout just because it takes minutes to
+    compose a long answer.
+    """
+    payload = dict(payload)
+    payload["stream"] = True
+    request = Request(OLLAMA_CHAT_URL, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    content = ""
+    reasoning = ""
+    tool_calls = None
+    with urlopen(request, timeout=timeout) as response:
+        for raw in response:
+            line = raw.decode("utf-8").strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = chunk.get("message") or {}
+            piece = msg.get("content")
+            if piece:
+                content += piece
+            think = msg.get("reasoning_content")
+            if think:
+                reasoning += think
+            calls = msg.get("tool_calls")
+            if calls:
+                tool_calls = (tool_calls or []) + calls
+            if chunk.get("done"):
+                break
+    message = {"role": "assistant", "content": content}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message
+
+
+def _ollama_request_stream(payload, key):
+    request = Request(OLLAMA_CHAT_URL, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    with urlopen(request, timeout=180) as response:
+        for raw in response:
+            line = raw.decode("utf-8").strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def _run_tool(call, classes, by_id, roster, saved_rows):
+    fn = (call.get("function") or {}).get("name")
+    args = (call.get("function") or {}).get("arguments") or {}
+    if isinstance(args, str):
+        args = json.loads(args)
+    if fn == "list_classes":
+        return {"classes": roster}
+    if fn == "get_class":
+        class_id = str(args.get("classId") or "")
+        class_name = str(args.get("className") or "").strip().lower()
+        match = by_id.get(class_id)
+        if match is None and class_name:
+            match = next((c for c in classes if c["name"].lower() == class_name or class_name in c["name"].lower()), None)
+        if match is not None:
+            return match
+        return {"error": "Unknown class. Use list_classes to see the available classes.", "classes": roster}
+    if fn == "create_insight":
+        class_id = str(args.get("classId"))
+        if class_id not in by_id:
+            return {"error": "Unknown class ID"}
+        item = {"id": hashlib.sha256((class_id + str(datetime.now(timezone.utc).timestamp())).encode()).hexdigest()[:12], "classId": class_id, "categoryName": str(args.get("categoryName") or ""), "title": str(args.get("title"))[:120], "body": str(args.get("body"))[:500], "icon": args.get("icon") if args.get("icon") in ALLOWED_ICONS else "sparkle", "color": args.get("color") if args.get("color") in ALLOWED_COLORS else "blue", "priority": 5, "manual": True}
+        saved_rows.append(item)
+        return {"saved": item["id"]}
+    return {"error": "Unsupported tool"}
 
 
 def ask_question(computed, settings, question, conversation=None):
     return ask_question_with_history(computed, settings, question, conversation)
 
 
-def ask_question_with_history(computed, settings, question, conversation=None):
+def ask_question_stream(computed, settings, question, conversation=None):
+    return ask_question_with_history_stream(computed, settings, question, conversation)
+
+
+def _build_chat(computed, settings, question, conversation):
     key = (settings.get("apiKeys") or {}).get("ollama")
     if not key:
         raise ValueError("Add an Ollama Cloud API key in Settings first.")
@@ -54,9 +141,23 @@ def ask_question_with_history(computed, settings, question, conversation=None):
         {"type": "function", "function": {"name": "get_class", "description": "Get current average and category averages for a class. Pass the class id from list_classes, or the class name directly.", "parameters": {"type": "object", "properties": {"classId": {"type": "string"}, "className": {"type": "string"}}}}},
         {"type": "function", "function": {"name": "create_insight", "description": "Save a user-requested insight after it is supported by grade data.", "parameters": {"type": "object", "properties": {"classId": {"type": "string"}, "categoryName": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"}, "icon": {"type": "string"}, "color": {"type": "string"}}, "required": ["classId", "title", "body"]}}},
     ]
-    messages = [{"role": "system", "content": "You are a supportive grade coach. Use tools to inspect grade facts before answering. Write concise Markdown. Never invent scores. Give concrete numbers the student can type into an online weighted grade calculator: state what grades to achieve and what happens to the average (e.g. 'Two more 100%s on Quizzes moves your quiz average to 97 and your overall average to 98, up from 94'). Never show your math or formulas - just the target and the result. Prefer the exact gradeMath values (categoryAverageNeededForGoal, overallAfterTwoPerfects, etc.) supplied in the class data. No fluff and no study tips. Grade data is the current quarter unless the user says otherwise. You may call create_insight only when the user explicitly asks to save an insight."}]
+    from prompts import get_prompt as _prompts_get
+    messages = [{"role": "system", "content": _prompts_get(settings, "grade_coach_chat")}]
     messages.extend(_normalize_history(conversation))
     messages.append({"role": "user", "content": question})
+    return {"key": key, "classes": classes, "by_id": by_id, "roster": roster, "tools": tools, "messages": messages}
+
+
+def _save_created_rows(saved_rows):
+    if saved_rows:
+        saved = _read_saved()
+        saved["manualInsights"] = (saved.get("manualInsights") or []) + saved_rows
+        _save(saved)
+
+
+def ask_question_with_history(computed, settings, question, conversation=None):
+    chat = _build_chat(computed, settings, question, conversation)
+    key, classes, by_id, roster, tools, messages = chat["key"], chat["classes"], chat["by_id"], chat["roster"], chat["tools"], chat["messages"]
     saved_rows = []
     while True:
         reply = _ollama_request({"model": settings.get("ollamaModel") or "gpt-oss:120b", "stream": False, "messages": messages, "tools": tools, "options": {"temperature": 0.2}}, key)
@@ -65,39 +166,43 @@ def ask_question_with_history(computed, settings, question, conversation=None):
         if not calls:
             messages.append(message)
             result = {"answer": message.get("content") or "I couldn't produce an answer.", "created": saved_rows, "conversation": _conversation_payload(messages)}
-            if saved_rows:
-                saved = _read_saved()
-                saved["manualInsights"] = (saved.get("manualInsights") or []) + saved_rows
-                _save(saved)
+            _save_created_rows(saved_rows)
             return result
         messages.append(message)
         for call in calls:
-            fn = (call.get("function") or {}).get("name")
-            args = (call.get("function") or {}).get("arguments") or {}
-            if isinstance(args, str):
-                args = json.loads(args)
-            if fn == "list_classes":
-                content = {"classes": roster}
-            elif fn == "get_class":
-                class_id = str(args.get("classId") or "")
-                class_name = str(args.get("className") or "").strip().lower()
-                match = by_id.get(class_id)
-                if match is None and class_name:
-                    match = next((c for c in classes if c["name"].lower() == class_name or class_name in c["name"].lower()), None)
-                if match is not None:
-                    content = match
-                else:
-                    content = {"error": "Unknown class. Use list_classes to see the available classes.", "classes": roster}
-            elif fn == "create_insight":
-                class_id = str(args.get("classId"))
-                if class_id not in by_id:
-                    content = {"error": "Unknown class ID"}
-                else:
-                    item = {"id": hashlib.sha256((class_id + str(datetime.now(timezone.utc).timestamp())).encode()).hexdigest()[:12], "classId": class_id, "categoryName": str(args.get("categoryName") or ""), "title": str(args.get("title"))[:120], "body": str(args.get("body"))[:500], "icon": args.get("icon") if args.get("icon") in ALLOWED_ICONS else "sparkle", "color": args.get("color") if args.get("color") in ALLOWED_COLORS else "blue", "priority": 5, "manual": True}
-                    saved_rows.append(item); content = {"saved": item["id"]}
-            else:
-                content = {"error": "Unsupported tool"}
-            messages.append({"role": "tool", "content": json.dumps(content)})
+            messages.append({"role": "tool", "content": json.dumps(_run_tool(call, classes, by_id, roster, saved_rows))})
+
+
+def ask_question_with_history_stream(computed, settings, question, conversation=None):
+    chat = _build_chat(computed, settings, question, conversation)
+    key, classes, by_id, roster, tools, messages = chat["key"], chat["classes"], chat["by_id"], chat["roster"], chat["tools"], chat["messages"]
+    saved_rows = []
+    while True:
+        reply_stream = _ollama_request_stream({"model": settings.get("ollamaModel") or "gpt-oss:120b", "stream": True, "messages": messages, "tools": tools, "options": {"temperature": 0.2}}, key)
+        content = ""
+        tool_calls = None
+        for chunk in reply_stream:
+            msg = chunk.get("message") or {}
+            piece = msg.get("content")
+            if piece:
+                content += piece
+                yield {"type": "delta", "content": piece}
+            calls = msg.get("tool_calls")
+            if calls:
+                tool_calls = (tool_calls or []) + calls
+            if chunk.get("done"):
+                break
+        message = {"role": "assistant", "content": content}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+            messages.append(message)
+            for call in tool_calls:
+                messages.append({"role": "tool", "content": json.dumps(_run_tool(call, classes, by_id, roster, saved_rows))})
+            continue
+        messages.append(message)
+        _save_created_rows(saved_rows)
+        yield {"type": "done", "conversation": _conversation_payload(messages), "created": saved_rows}
+        return
 
 
 def _normalize_history(conversation):
@@ -215,7 +320,7 @@ def _grade_math(cls):
         perfect_scores_to_goal = None
         reachable_with_perfects = False
         if needed_avg is not None and graded_count > 0:
-            if needed_avg > 100:
+            if needed_avg >= 100:
                 perfect_scores_to_goal = None  # even all 100% can't hit goal here alone
             elif needed_avg <= avg:
                 perfect_scores_to_goal = 0  # already at/past target on this category

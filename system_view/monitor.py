@@ -13,8 +13,10 @@ pipeline. Only the Python standard library is used.
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -194,6 +196,66 @@ NODES = [
         "role": "Gmail SMTP relay used for grade-change reports and operational error emails.",
         "facts": [["Host", "smtp.gmail.com"], ["TLS", "STARTTLS on port 587"]],
     },
+    # ---- Newer Academic OS parts ----
+    {
+        "id": "trilium", "label": "Trilium", "sub": "ETAPI knowledge base", "kind": "external", "zone": "external",
+        "x": 140, "y": 460, "color": "#94a3b8", "icon": "book",
+        "role": "Trilium personal knowledge base (ETAPI). Class folders hold the chapter notes that "
+                "power note-quiz generation and Blooket quiz CSV building.",
+        "facts": [["API", "ETAPI (url + token)"], ["Used by", "note-quiz scheduler · blooket_builder"],
+                  ["Mapping", "class id → note folder in settings.trilium"]],
+    },
+    {
+        "id": "scheduler", "label": "note_quiz_scheduler.py", "sub": "Per-class quiz timers", "kind": "module",
+        "zone": "backend", "x": 390, "y": 460, "color": "#8b5cf6", "icon": "clock", "file": "note_quiz_scheduler.py",
+        "role": "One-shot per-class scheduler. Each enabled class gets a timer that fires at its "
+                "endTime on the configured weekdays, diffs the linked chapter for new lines, and "
+                "generates a note quiz when enough material has been added.",
+        "facts": [["Lives in", "dashboard_server process (thread)"], ["Runs", "timer per enabled class"],
+                  ["Rebuild", "at startup + whenever /api/settings changes"]],
+        "endpoints": [["GET", "/api/note_quiz/scheduler/status"]],
+    },
+    {
+        "id": "note_quiz_db", "label": "note_quiz.db", "sub": "Quiz + attempt store", "kind": "data", "zone": "data",
+        "x": 610, "y": 700, "color": "#f59e0b", "icon": "file", "file": "data/note_quiz.db",
+        "role": "SQLite store for generated note-quiz sets, questions, attempts, and per-line colored "
+                "state used by the Review-mode learning loop.",
+        "facts": [["Written by", "scheduler · /api/note_quiz/sets/generate · attempts"], ["Read by", "dashboard /api/note_quiz/*"]],
+    },
+    {
+        "id": "blooket", "label": "blooket_builder.py", "sub": "Quiz job runner", "kind": "module",
+        "zone": "backend", "x": 880, "y": 400, "color": "#8b5cf6", "icon": "layers", "file": "blooket_builder.py", "size": 1.1,
+        "role": "Runs the Blooket quiz pipeline: resolves the class-linked note, picks the latest "
+                "chapter, asks Ollama Cloud for multiple-choice questions in Blooket's CSV template, "
+                "persists the set locally, then launches the publish bot to upload it.",
+        "facts": [["Driven by", "dashboard POST /api/blooket/generate · custom · cancel"],
+                  ["Queue", "jobs wait behind a single worker"], ["Writes", "data/blooket_sets.json"],
+                  ["Phase", "idle · generating · publishing · done · failed"]],
+        "endpoints": [["GET", "/api/blooket/status"], ["POST", "/api/blooket/generate · custom · cancel"]],
+    },
+    {
+        "id": "blooket_sets", "label": "blooket_sets.json", "sub": "Saved quiz sets", "kind": "data", "zone": "data",
+        "x": 610, "y": 600, "color": "#f59e0b", "icon": "file", "file": "data/blooket_sets.json",
+        "role": "Per-class registry of generated Blooket sets (setUrl, sourceNoteId, questions, "
+                "publish state). Written the moment questions are generated, so a bot failure "
+                "never loses the content.",
+        "facts": [["Written by", "blooket_builder.py"], ["Read by", "dashboard /api/blooket/*"]],
+    },
+    {
+        "id": "blooket_bot", "label": "Blooket publisher", "sub": "blooket-bot · Chromium", "kind": "external", "zone": "external",
+        "x": 1460, "y": 440, "color": "#94a3b8", "icon": "cloud",
+        "role": "Headless (VNC) Chromium bot that signs into blooket.com, opens the create page, "
+                "uploads the generated CSV, and captures the new set's ID and URL.",
+        "facts": [["Runs", "blooket-bot/test.py with DISPLAY over VNC"], ["Writes back", "setUrl + setID to blooket_builder"]],
+    },
+    {
+        "id": "auth", "label": "auth.json", "sub": "Login credentials", "kind": "data", "zone": "data",
+        "x": 250, "y": 460, "color": "#f59e0b", "icon": "gear", "file": "data/auth.json",
+        "role": "Dashboard login credentials (username + bcrypt hash). Guarded by Cloudflare Access; "
+                "recorded here so credential changes show up in the activity feed.",
+        "facts": [["Written by", "set_auth.sh (bcrypt)"], ["Read by", "dashboard /login"],
+                  ["Access", "Cloudflare Access + token cookie"]],
+    },
 ]
 
 EDGES = [
@@ -260,6 +322,32 @@ EDGES = [
     # email
     {"id": "e27", "from": "emailer", "to": "smtp", "label": "send email", "kind": "smtp",
      "note": "SMTP_SSL / STARTTLS depending on config"},
+    # ---- scheduler (note-quiz timers) ----
+    {"id": "e28", "from": "settings", "to": "scheduler", "label": "endTimes · enable", "kind": "read",
+     "note": "noteQuiz.classes schedule reloaded on every rebuild()"},
+    {"id": "e29", "from": "trilium", "to": "scheduler", "label": "fetch chapter", "kind": "function",
+     "note": "latest_chapter + get_note_content over ETAPI at fire time"},
+    {"id": "e30", "from": "scheduler", "to": "note_quiz_db", "label": "save generated set", "kind": "write", "chain": 5,
+     "note": "note_quiz.save_set when a timer fires with enough new lines"},
+    {"id": "e31", "from": "scheduler", "to": "ai", "label": "generate questions", "kind": "function",
+     "note": "note_quiz.generate_questions → Ollama Cloud"},
+    # ---- blooket pipeline ----
+    {"id": "e32", "from": "dashboard", "to": "blooket", "label": "start / cancel job", "kind": "function",
+     "note": "POST /api/blooket/generate · /api/blooket/custom · cancel"},
+    {"id": "e33", "from": "settings", "to": "blooket", "label": "ollama key · notes", "kind": "read",
+     "note": "Ollama key + trilium notes map"},
+    {"id": "e34", "from": "trilium", "to": "blooket", "label": "chapter content", "kind": "read",
+     "note": "resolve class note → latest chapter for question generation"},
+    {"id": "e35", "from": "blooket", "to": "ollama", "label": "generate CSV", "kind": "https", "chain": 6,
+     "note": "Ollama Cloud multiple-choice questions in Blooket CSV template"},
+    {"id": "e36", "from": "blooket", "to": "blooket_sets", "label": "save set", "kind": "write",
+     "note": "Persisted the moment questions are generated (before publish)"},
+    {"id": "e37", "from": "blooket", "to": "blooket_bot", "label": "launch publisher", "kind": "subprocess",
+     "note": "blooket-bot/test.py · Chromium session uploads CSV"},
+    {"id": "e38", "from": "blooket_bot", "to": "blooket_sets", "label": "publish result", "kind": "write",
+     "note": "setUrl + setID written back after the bot captures them"},
+    {"id": "e39", "from": "blooket", "to": "browser", "label": "job status · result", "kind": "http",
+     "note": "frontend polls /api/blooket/status and streams live job logs"},
 ]
 
 NODES_BY_ID = {n["id"]: n for n in NODES}
@@ -270,11 +358,26 @@ DATA_FILES = {
     "classroom_latest": "classroom_latest.json",
     "settings": "data/settings.json",
     "ai_insights": "data/ai_insights.json",
+    "blooket_sets": "data/blooket_sets.json",
+    "note_quiz_db": "data/note_quiz.db",
+    "auth": "data/auth.json",
+}
+
+# Which watched files are JSON enough to fingerprint key-by-key.
+# (note_quiz.db is SQLite — it is hashed whole instead.)
+JSON_FILES = {k for k, v in DATA_FILES.items() if v.endswith(".json")}
+
+ORIGIN_HINTS = {
+    "grades_data": "sis_login.py · scrape wrote snapshot",
+    "grades_history": "sis_login.py · scrape archived quarters",
+    "classroom_latest": "api_server.py ← Apps Script",
+    "settings": "browser · POST /api/settings",
+    "auth": "set_auth.sh · CLI credential change",
 }
 
 PROC_PATTERNS = {
     "scraper": "sis_login.py",
-    "dashboard": "dashboard_server.py",
+    "dashboard": ("dashboard_server.py", "dashboard_server", "uvicorn"),
     "classroom_api": "api_server.py",
 }
 
@@ -284,6 +387,42 @@ DASH_ENDPOINTS = {
     "insights": "/api/insights",
     "settings": "/api/settings",
 }
+
+# Each real dashboard endpoint → the exact edges that genuinely carry data when
+# that request is served (data reads into the dashboard + the serving edge back
+# to the browser). Drives real, precise edge flow from pushed activity.
+ACTIVITY_EDGES = [
+    # (substring, [edges that carry the read/serve])
+    ("/api/computed/assignments", ["e08", "e09", "e13", "e14", "e17"]),
+    ("/api/computed/overview",    ["e08", "e09", "e13", "e14", "e17"]),
+    ("/api/computed/classes",     ["e08", "e09", "e13", "e14", "e17"]),
+    ("/api/computed",             ["e08", "e09", "e13", "e14", "e17"]),
+    ("/api/grades",               ["e08", "e09", "e15", "e17"]),
+    ("/api/settings",             ["e10", "e17"]),
+    ("/api/insights",             ["e22", "e17"]),
+    ("/api/todos",                ["e10", "e17"]),
+    ("/api/scrape",               ["e16", "e17"]),
+    ("/api/blooket/classes",      ["e33", "e17"]),
+    ("/api/blooket/set",          ["e17"]),
+    ("/api/blooket/quiz",         ["e17"]),
+    ("/api/trilium",              ["e33", "e17"]),
+    ("/api/note_quiz",            ["e17"]),
+    ("/api/auth",                 ["e17"]),
+]
+
+# Endpoints we never treat as real activity (monitor/health/static plumbing).
+ACTIVITY_SKIP = ("/health", "/login", "/logout", "/favicon.ico", "/static/", "/js/", "/css/", "/logo.png", "/api/activity")
+
+EDGES_BY_ID = {e["id"]: e for e in EDGES}
+
+def _activity_edges_for(path):
+    """Return the precise edge ids that carry data for a real request path."""
+    if any(path.startswith(s) for s in ACTIVITY_SKIP):
+        return []
+    for frag, edges in ACTIVITY_EDGES:
+        if frag in path:
+            return edges
+    return ["e17"] if path != "/" else ["e17"]
 
 
 def build_graph():
@@ -412,8 +551,9 @@ def _scan_processes():
         except (IndexError, ValueError):
             continue
         args = parts[4]
-        for nid, filename in PROC_PATTERNS.items():
-            if filename in args and filename not in "monitor.py":
+        for nid, pat in PROC_PATTERNS.items():
+            pats = (pat,) if isinstance(pat, str) else pat
+            if any(p in args for p in pats) and "monitor.py" not in args:
                 found[nid] = {
                     "running": True,
                     "pid": int(pid),
@@ -430,6 +570,85 @@ def _fmt_iso(ts):
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return ""
+
+
+def _fmt_iso_short(ts):
+    try:
+        return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# JSON fingerprinting (action-origin detection)
+# ---------------------------------------------------------------------------
+
+def _hash_bytes(data):
+    return hashlib.md5(data).hexdigest()[:12]
+
+
+def _file_hash(path):
+    try:
+        with open(path, "rb") as handle:
+            return _hash_bytes(handle.read())
+    except OSError:
+        return None
+
+
+def _fp_walk(obj, prefix, fp, depth):
+    if isinstance(obj, dict):
+        if not obj:
+            fp[prefix or "@"] = "{}"
+            return
+        for k, v in obj.items():
+            p = prefix + "." + k if prefix else k
+            fp[p] = _hash_bytes(json.dumps(v, sort_keys=True, default=str).encode("utf-8"))
+            if isinstance(v, (dict, list)) and depth < 3:
+                _fp_walk(v, p, fp, depth + 1)
+    elif isinstance(obj, list):
+        fp[prefix or "@"] = _hash_bytes(("len:" + str(len(obj))).encode("utf-8"))
+        if depth < 3:
+            for item in obj[:8]:
+                _fp_walk(item, prefix + "[*]", fp, depth + 1)
+
+
+def _json_fp(path):
+    """Structural fingerprint of a JSON file: dotted-path -> hash of subtree."""
+    data = _read_json(path)
+    if data is None:
+        return None
+    fp = {}
+    _fp_walk(data, "", fp, 0)
+    return fp
+
+
+def _changed_json_keys(path, old_fp):
+    """Dotted paths that changed vs the previous fingerprint (capped, readable)."""
+    fp = _json_fp(path)
+    if fp is None:
+        return ["<rewritten>"] if old_fp else []
+    if old_fp is None:
+        return list(fp.keys())[:10] or ["<written>"]
+    changed = [k for k in fp if fp.get(k) != old_fp.get(k)]
+    return changed[:10]
+
+
+def _infer_origin(node_id, changed, blooket_phase, scraping):
+    if node_id == "ai_insights":
+        if any(k.startswith("manual") for k in changed):
+            return "browser · /api/insights (manual)"
+        return "ai_insights.py · post-scrape regenerate"
+    if node_id == "blooket_sets":
+        if blooket_phase not in ("idle", None):
+            return "blooket_builder.py · active job (" + (blooket_phase or "?") + ")"
+        return "blooket_builder.py · set edit / publish"
+    if node_id == "note_quiz_db":
+        return "note-quiz job · dashboard / scheduler (quiz play writes too)"
+    if node_id in ORIGIN_HINTS:
+        return ORIGIN_HINTS[node_id]
+    if scraping:
+        return "scrape pipeline"
+    return "pipeline component"
 
 
 # ---------------------------------------------------------------------------
@@ -452,12 +671,17 @@ class Telemetry:
         self._last_scrape_logs = []
         self._ep_hits = {}
         self._ep_last = {}
+        self._file_fp = {}          # node_id -> dict fingerprint (JSON) or md5 (raw)
+        self._scrape_src = None     # origin label of the running / last scrape
+        self._blooket_state = {"phase": None, "queued": None}
+        self._nq_last_fired = {}
 
     # ---- low-level probes ----
     def _cf_headers(self):
+        headers = {"X-Monitor-Probe": "1"}
         if CF_EMAILS:
-            return {"cf-access-authenticated-user-email": CF_EMAILS[0]}
-        return {}
+            headers["cf-access-authenticated-user-email"] = CF_EMAILS[0]
+        return headers
 
     def _sample_files(self):
         out = {}
@@ -507,6 +731,58 @@ class Telemetry:
             "logs": data.get("logs") or [],
         }
 
+    def _scrape_origin(self, scrape):
+        """Fingerprint who started the scrape from the first log line."""
+        if not scrape:
+            return None
+        for line in scrape.get("logs") or []:
+            if line.startswith("Starting "):
+                m = re.search(r"Starting ([^:]+):", line)
+                tag = (m.group(1) or "").strip() if m else ""
+                if tag.startswith("auto"):
+                    return "auto-scrape timer"
+                return "manual · browser POST /api/scrape"
+        return "unknown"
+
+    def _sample_blooket(self, processes):
+        """Live Blooket pipeline job + queue via /api/blooket/status."""
+        if not processes.get("dashboard", {}).get("running"):
+            return None
+        data = _probe(
+            f"http://{self.dash_host}:{self.dash_port}/api/blooket/status",
+            headers=self._cf_headers(), timeout=1.6,
+        )
+        if not isinstance(data, dict):
+            return None
+        result = data.get("result") or {}
+        return {
+            "running": bool(data.get("running")),
+            "phase": data.get("phase") or "idle",
+            "status": data.get("status") or "",
+            "exitCode": data.get("exitCode"),
+            "jobId": data.get("jobId"),
+            "queued": data.get("queued") or 0,
+            "queue": data.get("queue") or [],
+            "cancelRequested": bool(data.get("cancelRequested")),
+            "result": {k: result.get(k) for k in ("setUrl", "questionCount", "title") if result.get(k)},
+        }
+
+    def _sample_note_quiz(self, processes):
+        """Live note-quiz scheduler timers via /api/note_quiz/scheduler/status."""
+        if not processes.get("dashboard", {}).get("running"):
+            return None
+        data = _probe(
+            f"http://{self.dash_host}:{self.dash_port}/api/note_quiz/scheduler/status",
+            headers=self._cf_headers(), timeout=1.6,
+        )
+        if not isinstance(data, dict):
+            return None
+        return {
+            "activeTimers": data.get("activeTimers") or 0,
+            "lastRebuildAt": data.get("lastRebuildAt"),
+            "lastFired": data.get("lastFired") or {},
+        }
+
     def _sample_extras(self):
         settings = _read_json(PROJECT_DIR / DATA_FILES["settings"]) or {}
         api_keys = settings.get("apiKeys") or {}
@@ -553,14 +829,7 @@ class Telemetry:
         }
 
     # ---- snapshot ----
-    def build_snapshot(self):
-        procs = _scan_processes()
-        files = self._sample_files()
-        services = self._sample_services(procs)
-        endpoints = self._sample_endpoints(procs)
-        scrape = self._sample_scrape(procs)
-        extra = self._sample_extras()
-
+    def _assemble(self, procs, files, services, endpoints, scrape, extra, blooket, note_quiz):
         last_log = ""
         if scrape and scrape.get("logs"):
             for line in reversed(scrape["logs"]):
@@ -578,6 +847,7 @@ class Telemetry:
                 "uptime": procs["scraper"]["uptime"],
                 "args": procs["scraper"]["args"],
                 "scrapeRunning": bool(scrape and scrape["running"]),
+                "scrapeOrigin": self._scrape_origin(scrape),
                 "exitCode": scrape and scrape["exitCode"],
                 "lastLog": last_log,
                 "schedule": extra["settings"]["autoScrapeSchedule"],
@@ -621,6 +891,17 @@ class Telemetry:
             "ollama": {"kind": "external", "configured": extra["ollama_configured"]},
             "smtp": {"kind": "external", "configured": extra["smtp_configured"]},
             "appscript": {"kind": "external", "payloadAge": extra["classroom"]["payloadAge"]},
+            "trilium": {"kind": "external"},
+            "scheduler": {
+                "kind": "library",
+                "activeTimers": (note_quiz or {}).get("activeTimers") or 0,
+                "lastRebuildAt": (note_quiz or {}).get("lastRebuildAt"),
+                "lastFired": (note_quiz or {}).get("lastFired") or {},
+            },
+            "blooket": {
+                "kind": "library",
+                **(blooket or {}),
+            },
         }
 
         snapshot = {
@@ -630,6 +911,8 @@ class Telemetry:
             "nodes": nodes,
             "services": services,
             "scrape": scrape,
+            "blooket": blooket,
+            "noteQuiz": note_quiz,
             "settings": extra["settings"],
         }
         self._prev = {
@@ -665,25 +948,81 @@ class Telemetry:
         self._events.append({"n": self._event_seq, "t": time.time(), "time": datetime.now().strftime("%H:%M:%S"),
                              "node": node, "kind": kind, "text": text})
 
-    def detect_and_push(self):
-        """Compare current sample to previous and emit transition events."""
-        try:
-            procs = _scan_processes()
-            files = {nid: _stat_file(PROJECT_DIR / rel) for nid, rel in DATA_FILES.items()}
-        except Exception:
-            return
+    def ingest(self, paths):
+        """Realtime activity pushed by the dashboard. Convert the real request
+        paths into precise edge-flow events (the exact data-carrying edges)."""
+        if not paths:
+            return 0
+        seen_edges = set()
+        labels = []
+        for p in paths:
+            if not isinstance(p, str):
+                continue
+            edges = _activity_edges_for(p)
+            if not edges:
+                continue
+            seen_edges.update(edges)
+            label = p.split("?")[0]
+            labels.append(label if label else p)
+        if not seen_edges:
+            return 0
+        text = ", ".join(labels[:5]) + ("…" if len(labels) > 5 else "")
+        self._event_seq += 1
+        self._events.append({
+            "n": self._event_seq, "t": time.time(),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "node": "browser", "kind": "flow", "text": "dashboard served: " + text,
+            "edges": sorted(seen_edges),
+        })
+        return len(seen_edges)
+
+    def detect_and_push(self, procs, files, scrape, blooket, note_quiz):
+        """Compare this sample to the previous and emit transition / fingerprint events."""
         prev = self._prev
+
+        # -- process start / stop --
         for nid in PROC_PATTERNS:
             running = procs[nid]["running"]
             label = NODES_BY_ID.get(nid, {}).get("label", nid)
             if prev.get("procs", {}).get(nid) is not None and prev["procs"][nid] != running:
                 self._push(nid, f"{label} {'started' if running else 'stopped'}")
-        for nid, mtime in prev.get("files", {}).items():
-            cur_mtime = files.get(nid, {}).get("mtime")
+
+        # -- data-file writes + JSON fingerprints (action origin) --
+        for nid in DATA_FILES:
+            stat = files.get(nid, {})
+            prev_mtime = prev.get("files", {}).get(nid)
             label = NODES_BY_ID.get(nid, {}).get("label", nid)
-            if mtime and cur_mtime and cur_mtime != mtime:
-                size = files[nid].get("size", 0)
-                self._push(nid, f"{label} updated · {size:,} bytes", "file")
+            # Prime the fingerprint on first observation — no event yet.
+            if nid not in self._file_fp:
+                if stat.get("mtime"):
+                    if nid in JSON_FILES:
+                        self._file_fp[nid] = _json_fp(PROJECT_DIR / DATA_FILES[nid])
+                    else:
+                        self._file_fp[nid] = _file_hash(PROJECT_DIR / DATA_FILES[nid])
+                continue
+            if not stat.get("mtime"):
+                self._push(nid, f"{label} removed from disk", "file")
+                self._file_fp.pop(nid, None)
+                continue
+            if prev_mtime is not None and prev_mtime == stat["mtime"]:
+                continue  # unchanged this poll
+            changed = []
+            if nid in JSON_FILES:
+                changed = _changed_json_keys(PROJECT_DIR / DATA_FILES[nid], self._file_fp[nid])
+                self._file_fp[nid] = _json_fp(PROJECT_DIR / DATA_FILES[nid])
+                detail = " · " + ", ".join(changed) if changed else ""
+            else:
+                fresh = _file_hash(PROJECT_DIR / DATA_FILES[nid])
+                detail = " · content changed" if self._file_fp.get(nid) != fresh else ""
+                self._file_fp[nid] = fresh
+            origin = _infer_origin(
+                nid, changed, (blooket or {}).get("phase"),
+                bool(scrape and scrape.get("running")),
+            )
+            size = stat.get("size", 0)
+            self._push(nid, f"{label} updated · {size:,} B{detail} · from {origin}", "file")
+
+        # -- service health --
         for svc, up in prev.get("health", {}).items():
             label = {"dashboard": "Dashboard API", "classroom_api": "Classroom API"}.get(svc, svc)
             if up is True:
@@ -691,12 +1030,64 @@ class Telemetry:
             elif up is False:
                 self._push(svc, f"{label} unreachable")
 
+        # -- scrape start / finish with a fingerprinted origin --
+        running_now = bool(scrape and scrape.get("running"))
+        running_prev = bool(prev.get("scrape"))
+        if running_now and not running_prev:
+            origin = self._scrape_origin(scrape) or "unknown"
+            self._scrape_src = origin
+            self._push("scraper", f"scrape started · origin: {origin}")
+        elif running_prev and not running_now:
+            exit_code = (scrape or {}).get("exitCode")
+            origin = self._scrape_src or (self._scrape_origin(scrape) or "unknown")
+            tag = f" · exit {exit_code}" if exit_code is not None else ""
+            self._push("scraper", f"scrape finished{tag} · origin: {origin}")
+            self._scrape_src = None
+
+        # -- blooket job + queue transitions --
+        phase = (blooket or {}).get("phase")
+        queued = (blooket or {}).get("queued", 0) if blooket else 0
+        prev_phase = self._blooket_state.get("phase")
+        prev_queued = self._blooket_state.get("queued")
+        if blooket and phase != prev_phase:
+            if phase == "generating" and prev_phase in ("idle", None):
+                self._push("blooket", f"blooket job started · generating questions" +
+                           (f" · {queued} queued" if queued else ""))
+            elif phase == "publishing":
+                self._push("blooket", "blooket job publishing… (Chromium bot)")
+            elif phase == "done":
+                res = blooket.get("result") or {}
+                self._push("blooket", "blooket job done · " + (res.get("setUrl") or f"{res.get('questionCount')} questions"))
+            elif phase == "failed":
+                self._push("blooket", "blooket job FAILED" + (f" · exit {blooket.get('exitCode')}" if blooket.get("exitCode") is not None else ""))
+            elif phase == "idle" and prev_phase not in ("idle", None):
+                if prev_phase != "done" and prev_phase != "failed":
+                    self._push("blooket", "blooket job finished")
+        elif blooket and queued != prev_queued:
+            self._push("blooket", f"blooket queue → {queued} pending" + (f" · next: {blooket['queue'][0].get('label')}" if blooket.get("queue") else ""))
+        self._blooket_state = {"phase": phase, "queued": queued}
+
+        # -- note-quiz scheduler fires --
+        fired = (note_quiz or {}).get("lastFired") or {}
+        for class_id, iso in fired.items():
+            if iso and self._nq_last_fired.get(class_id) != iso:
+                self._nq_last_fired[class_id] = iso
+                self._push("scheduler", f"note-quiz generated · class {class_id} · {_fmt_iso_short(datetime.fromisoformat(iso).timestamp())}")
+
     def run(self):
         while True:
             try:
-                self.detect_and_push()
                 t0 = time.time()
-                snap = self.build_snapshot()
+                procs = _scan_processes()
+                files = self._sample_files()
+                services = self._sample_services(procs)
+                endpoints = self._sample_endpoints(procs)
+                scrape = self._sample_scrape(procs)
+                blooket = self._sample_blooket(procs)
+                note_quiz = self._sample_note_quiz(procs)
+                extra = self._sample_extras()
+                self.detect_and_push(procs, files, scrape, blooket, note_quiz)
+                snap = self._assemble(procs, files, services, endpoints, scrape, extra, blooket, note_quiz)
                 snap["sample_ms"] = round((time.time() - t0) * 1000, 1)
                 snap["events"] = list(self._events)
                 snap["meta"] = {
@@ -739,6 +1130,30 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             self._route()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self._json({"error": repr(exc)}, 500)
+            except Exception:
+                pass
+
+    def do_POST(self):
+        try:
+            path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            if path == "/ingest":
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    body = json.loads(raw.decode("utf-8") or "{}")
+                except ValueError:
+                    self._json({"ok": False, "error": "bad json"}, 400)
+                    return
+                paths = body.get("paths") or []
+                count = TELEMETRY.ingest(paths)
+                self._json({"ok": True, "edgesFired": count})
+                return
+            self._json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # noqa: BLE001

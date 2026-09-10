@@ -10,49 +10,99 @@
 // ─── BLOOKET QUIZ BUILDER ───────────────────────────────────────
 let _blooketCtx = null;
 let _blooketPollTimer = null;
+let _blooketLoadPromise = null;
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && _blooketCtx?.busy) blooketPollTick();
 });
 
 async function loadBlooketClasses(showSkeleton = true) {
+  // Reuse an in-flight fetch so a background preload and a live navigation
+  // never race into two simultaneous requests.
+  if (_blooketLoadPromise) return _blooketLoadPromise;
+  _blooketLoadPromise = (async () => {
+    const container = document.getElementById('review-sets');
+    // When preloading in the background (no container on screen yet) we still
+    // fetch so the data is ready by the time the user opens Review.
+    if (showSkeleton && container) {
+      container.innerHTML = Array(4).fill(0).map(() => '<div class="h-52 bg-[#16161f] rounded-2xl animate-pulse"></div>').join('');
+    }
+    try {
+      const res = await fetch('/api/blooket/classes?_=' + Date.now());
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const classes = (data.classes || []).map(c => ({ ...c, _color: classColorFor(c.classId) }));
+      const customSets = data.customSets || [];
+      state.blooketClasses = classes;
+      state.blooketCustomSets = customSets;
+      // Load today's note quizzes so each class card can list them cleanly.
+      try {
+        const nq = await fetch('/api/note_quiz/today?_=' + Date.now());
+        if (nq.ok) {
+          const nqData = await nq.json();
+          state.noteQuizToday = {};
+          for (const s of (nqData.sets || [])) {
+            const key = String(s.classId || '');
+            if (!state.noteQuizToday[key]) state.noteQuizToday[key] = [];
+            state.noteQuizToday[key].push(s);
+          }
+        }
+      } catch (_) {}
+      state.blooketLoaded = true;
+      // Render into the container if present, otherwise into an in-memory cache.
+      if (container) {
+        renderReviewGrid(classes, customSets);
+      } else {
+        state._preloadedBlooketGrid = true;
+      }
+      populateCustomBlooketTarget(classes, customSets);
+      renderCustomBlooketSets(customSets);
+      if (_blooketCtx?.lastStatus) {
+        if (_blooketCtx.busy) renderBlooketStepsInline(_blooketCtx.lastStatus);
+        else if (_blooketCtx.done) renderBlooketDoneInline(_blooketCtx.lastStatus);
+      }
+    } catch (err) {
+      if (container) container.innerHTML = `<div class="col-span-full text-xs text-red-400">Couldn't load classes — ${escapeHtml(err.message || 'error')}</div>`;
+    }
+  })();
+  try {
+    return await _blooketLoadPromise;
+  } finally {
+    _blooketLoadPromise = null;
+  }
+}
+
+// Render the review grid from cached data if the sets were preloaded in the
+// background. Fast path: no network round-trip when opening Review.
+async function renderReviewGridIfLoaded() {
   const container = document.getElementById('review-sets');
   if (!container) return;
-  if (showSkeleton) {
-    container.innerHTML = Array(4).fill(0).map(() => '<div class="h-52 bg-[#16161f] rounded-2xl animate-pulse"></div>').join('');
+  if (state.blooketLoaded && state.blooketClasses) {
+    renderReviewGrid(state.blooketClasses, state.blooketCustomSets);
+    renderCustomBlooketSets(state.blooketCustomSets || []);
+    return;
   }
-  try {
-    const res = await fetch('/api/blooket/classes?_=' + Date.now());
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    const classes = (data.classes || []).map(c => ({ ...c, _color: classColorFor(c.classId) }));
-    const customSets = data.customSets || [];
-    state.blooketClasses = classes;
-    state.blooketCustomSets = customSets;
-    renderReviewGrid(classes, customSets);
-    state.blooketLoaded = true;
-    populateCustomBlooketTarget(classes, customSets);
-    renderCustomBlooketSets(customSets);
-    if (_blooketCtx?.lastStatus) {
-      if (_blooketCtx.busy) renderBlooketStepsInline(_blooketCtx.lastStatus);
-      else if (_blooketCtx.done) renderBlooketDoneInline(_blooketCtx.lastStatus);
-    }
-  } catch (err) {
-    container.innerHTML = `<div class="col-span-full text-xs text-red-400">Couldn't load classes — ${escapeHtml(err.message || 'error')}</div>`;
+  // Data not ready yet - wait for any in-flight (pre)load to finish, then
+  // render into the now-visible container.
+  await loadBlooketClasses(true);
+  if (state.blooketLoaded && state.blooketClasses) {
+    renderReviewGrid(state.blooketClasses, state.blooketCustomSets);
+    renderCustomBlooketSets(state.blooketCustomSets || []);
   }
 }
 
-function findSetInState(setUrl) {
+function findSetInState(id) {
+  if (!id) return null;
   for (const cls of (state.blooketClasses || [])) {
-    const found = (cls.sets || []).find(s => s.setUrl === setUrl);
+    const found = (cls.sets || []).find(s => s.setUrl === id || s.localKey === id);
     if (found) return found;
   }
-  return (state.blooketCustomSets || []).find(s => s.setUrl === setUrl) || null;
+  return (state.blooketCustomSets || []).find(s => s.setUrl === id || s.localKey === id) || null;
 }
 
 
-window.openSetDetail = function(setUrl) {
-  state.currentSetUrl = setUrl;
+window.openSetDetail = function(id) {
+  state.currentSetUrl = id;
   render();
 };
 
@@ -358,9 +408,11 @@ function renderReviewGrid(classes, customSets) {
         <div class="text-xs text-gray-600 max-w-xs">${q ? 'Try a different search term.' : 'Link class notes in Settings → Class Notes, or build a custom quiz with the + button.'}</div>
       </div>
     </div>`;
+    window._nqRenderProgressBanner?.();
     return;
   }
-  container.innerHTML = `${classHtml}${customHtml}`;
+  container.innerHTML = `<div id="nq-progress-banner" class="col-span-1 lg:col-span-2"></div>${classHtml}${customHtml}`;
+  window._nqRenderProgressBanner?.();
 }
 
 function populateCustomBlooketTarget(classes, customSets) {
@@ -389,46 +441,125 @@ function renderCustomBlooketSets(customSets) {
     </div>`).join('');
 }
 
+function deriveChapters(cls) {
+  const chapters = cls.chapters || [];
+  if (!chapters.length) return [];
+  return chapters.map(ch => ({
+    noteId: ch.noteId,
+    title: ch.title || '',
+    sets: (cls.sets || []).filter(s => s.sourceNoteId === ch.noteId),
+  }));
+}
+
+function chapterNav(classId, dir) {
+  const cls = (state.blooketClasses || []).find(c => String(c.classId) === String(classId));
+  if (!cls) return;
+  const chapters = deriveChapters(cls);
+  if (chapters.length < 2) return;
+  const cur = state.chapterIndex[classId] || 0;
+  const next = Math.max(0, Math.min(chapters.length - 1, cur - dir));
+  if (next === cur) return;
+  state.chapterIndex[classId] = next;
+  render();
+}
+
 function renderBlooketClassCard(cls) {
   const color = cls._color || COLORS[0];
   const latest = cls.latest;
-  const sets = (cls.sets || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  const allSets = (cls.sets || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const expanded = !!state.expandedClasses[cls.classId];
+  const chapters = deriveChapters(cls);
+  const chapterIdx = state.chapterIndex[cls.classId] || 0;
+  const viewingAll = !chapters.length || chapterIdx === 0;
+  const sets = viewingAll ? allSets : (chapters[Math.min(chapterIdx, chapters.length - 1)]?.sets || []);
   const limit = 4;
   const visible = expanded ? sets : sets.slice(0, limit);
   const extra = sets.length - visible.length;
   const letter = escapeHtml((cls.shortName || cls.name || '?').trim().charAt(0).toUpperCase());
   const rows = visible.map(s => renderSetCard(s, color, latest && s.sourceNoteId === latest.noteId));
+  const curChapter = chapters[Math.min(chapterIdx, chapters.length - 1)];
+  const chapterTitle = viewingAll ? (latest?.title || cls.noteTitle || '') : (curChapter?.title || '');
+  const chapterNoteId = viewingAll ? (latest?.noteId || '') : (curChapter?.noteId || '');
+  const showNav = chapters.length >= 2;
 
   return `
-  <div class="review-class-section bg-[#12121b] border border-[#22222e] rounded-2xl overflow-hidden" data-class-id="${escapeHtml(cls.classId)}">
-    <div class="relative flex items-center gap-3 px-4 py-3.5 border-b border-[#22222e]" style="background:linear-gradient(90deg, ${color}16, transparent 62%)">
+  <div class="review-class-section bg-[#12121b] border border-[#22222e] rounded-2xl" data-class-id="${escapeHtml(cls.classId)}">
+    <div class="relative flex items-center gap-3 px-4 py-3.5 border-b border-[#22222e] overflow-hidden" style="background:linear-gradient(90deg, ${color}16, transparent 62%)">
       <span class="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0" style="background:${color}24; color:${color}">${letter}</span>
       <div class="min-w-0 flex-1">
         <div class="text-sm font-semibold text-white truncate">${escapeHtml(cls.name)}</div>
-        <div class="text-[11px] text-gray-500 truncate">${sets.length} set${sets.length === 1 ? '' : 's'}${latest ? ' · <a href="' + escapeHtml(triliumWebUrl(latest.noteId)) + '" target="_blank" rel="noopener" title="Open the latest notes in Trilium" class="hover:text-blue-400 hover:underline underline-offset-2 transition-colors">' + escapeHtml(latest.title) + '</a>' : (cls.noteTitle ? ' · ' + escapeHtml(cls.noteTitle) : ' · no chapter notes')}</div>
+        <div class="flex items-center gap-1 min-w-0">
+          ${showNav ? `<button type="button" onclick="event.stopPropagation(); chapterNav('${jsStr(cls.classId)}', -1)" class="w-4 h-4 rounded flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors flex-shrink-0" title="Previous chapter">${icon('chevronLeft','w-3 h-3')}</button>` : ''}
+          <div class="text-[11px] text-gray-500 truncate min-w-0">
+            ${chapterNoteId ? `<a href="${escapeHtml(triliumWebUrl(chapterNoteId))}" target="_blank" rel="noopener" title="Open ${escapeHtml(chapterTitle)} in Trilium" class="hover:text-blue-400 hover:underline underline-offset-2 transition-colors">${escapeHtml(chapterTitle || 'chapter')}</a>` : `<span>${escapeHtml(chapterTitle || 'no chapter notes')}</span>`}
+            ${showNav ? `<span class="text-gray-600 ml-0.5">${chapterIdx + 1}/${chapters.length}</span>` : ''}
+          </div>
+          ${showNav ? `<button type="button" onclick="event.stopPropagation(); chapterNav('${jsStr(cls.classId)}', 1)" class="w-4 h-4 rounded flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors flex-shrink-0" title="Next chapter">${icon('chevronRight','w-3 h-3')}</button>` : ''}
+        </div>
       </div>
-      <button type="button" onclick="startClassFlow('${jsStr(cls.classId)}')"
-        title="Generate a new quiz from ${latest ? escapeHtml(latest.title) : 'this class'}"
+      <button type="button" onclick="startChapterFlow('${jsStr(cls.classId)}', '${jsStr(chapterNoteId)}')"
+        title="Generate a new quiz from ${escapeHtml(chapterTitle || 'this chapter')}"
         class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-purple-300 hover:bg-purple-500/10 transition-all flex-shrink-0">${icon('sparkle', 'w-3.5 h-3.5')}</button>
       <div class="blooket-progress absolute inset-0 flex items-center justify-center px-16 pointer-events-none" data-class-id="${escapeHtml(cls.classId)}"></div>
     </div>
     <div class="p-3">
       ${sets.length ? `<div class="space-y-2">${rows.join('')}</div>` : '<div class="text-xs text-gray-600 px-1 py-2">No quizzes yet — use the sparkle button or the + button to create one.</div>'}
       ${extra > 0 ? `<button type="button" onclick="expandClassSets('${jsStr(cls.classId)}')" class="w-full mt-2 text-xs font-medium text-gray-500 hover:text-gray-300 transition-colors py-1.5">+ ${extra} more set${extra === 1 ? '' : 's'}</button>` : ''}
+      ${renderNoteQuizSection(cls)}
     </div>
   </div>`;
 }
 
+// Clean per-class section for today's note quizzes: a short title and the
+// question count, plus a quiet "Generate" action for enabled classes.
+function renderNoteQuizSection(cls) {
+  const cid = String(cls.classId);
+  const today = (state.noteQuizToday || {})[cid] || [];
+  const enabled = !!((state.noteQuiz && state.noteQuiz.classes) ? state.noteQuiz.classes[cid] : null)?.enabled;
+  if (!today.length && !enabled) return '';
+  const items = today.map(s => {
+    const menuOpen = state.noteQuizMenuOpen === s.id;
+    return `
+    <div class="relative">
+      <div class="w-full text-left px-3 py-2 rounded-lg bg-[#0a0a0f] border border-[#22222e] hover:border-blue-500/40 transition-colors flex items-center gap-2.5 cursor-pointer" onclick="window.openNoteQuiz(${s.id})" title="Open ${escapeHtml(s.title || s.chapterTitle || 'note quiz')}">
+        <span class="w-7 h-7 rounded-lg bg-blue-500/15 border border-blue-500/30 text-blue-300 flex items-center justify-center flex-shrink-0">${icon('sparkle','w-3.5 h-3.5')}</span>
+        <span class="flex-1 min-w-0 text-[13px] text-gray-200 truncate">${escapeHtml(s.title || s.chapterTitle || 'Note quiz')}</span>
+        <span class="text-[11px] text-gray-500 flex-shrink-0 tabular-nums">${s.questionCount || 0} questions</span>
+        <button type="button" onclick="event.stopPropagation(); toggleNoteQuizMenu(${s.id})" class="p-1 rounded-md text-gray-500 hover:text-gray-300 hover:bg-[#22222e] transition-colors flex-shrink-0" title="More">${icon('dots','w-3.5 h-3.5')}</button>
+      </div>
+      ${menuOpen ? `
+      <div class="absolute right-0 top-full z-50 mt-1 bg-[#16161f] border border-[#22222e] rounded-xl shadow-xl py-1 min-w-[140px]">
+        <button onclick="event.stopPropagation(); deleteNoteQuiz(${s.id})" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-[#22222e] hover:text-white flex items-center gap-2 transition-colors">${icon('trash','w-3 h-3')} Delete</button>
+        <button onclick="event.stopPropagation(); recreateNoteQuiz(${s.id}, '${jsStr(s.chapterNoteId || '')}', '${jsStr(cid)}')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-[#22222e] hover:text-white flex items-center gap-2 transition-colors">${icon('sparkle','w-3 h-3')} Recreate</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+  return `
+    <div class="mt-3 pt-3 border-t border-[#22222e]">
+      <div class="flex items-center justify-between mb-1.5">
+        <div class="text-[11px] uppercase tracking-wider text-gray-500">Note quizzes</div>
+        ${enabled ? `<button type="button" data-nq-manual-btn="${jsStr(cid)}" onclick="window.openNoteQuizForClass('${jsStr(cid)}')" title="Generate today's note quiz from this class's notes"
+          class="inline-flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors">${icon('sparkle','w-3 h-3')} Generate</button>` : ''}
+      </div>
+      <div class="space-y-1.5">${items}</div>
+      ${!today.length ? '<div class="text-[11px] text-gray-600 px-1">No quiz generated yet today.</div>' : ''}
+    </div>`;
+}
+
 function renderSetCard(s, color, isLatest) {
   const url = s.setUrl || '';
+  const localKey = s.localKey || '';
+  // Use the Blooket URL if published; otherwise key by localKey so the local
+  // app can still open/review the set even when publishing failed.
+  const id = url || localKey || '';
+  const published = !!url;
   const title = s.title || s.chapterTitle || 'Blooket set';
-  const stat = getQuizStats(url);
+  const stat = getQuizStats(id);
   const statHtml = stat && stat.total > 0
     ? `<div class="flex items-center gap-1.5" title="${stat.correct} of ${stat.total} correct across all sessions">${ringPct(stat.pct, 30, accRingColor(stat.pct))}</div>`
     : '<div class="text-[10px] text-gray-600">Not played yet</div>';
   // Level tag — only shown once a levels-based run has started for this set.
-  const lvRaw = getLevelState(url);
+  const lvRaw = getLevelState(id);
   const li = lvRaw ? levelInfo(sanitizeLevelState(lvRaw, (s.questions || []).length || s.questionCount || 0)) : null;
   const lc = li ? levelColor(li.level, isLightTheme()) : '';
   const lvHtml = li
@@ -438,21 +569,31 @@ function renderSetCard(s, color, isLatest) {
          ${li.nr ? `<span class="text-[9px] font-bold leading-none" style="color:#f87171" title="${li.nr} need review">·${li.nr}</span>` : ''}
        </div>`
     : '';
-  return `
-  <div class="group rounded-xl border border-[#22222e] bg-[#0a0a0f] p-3.5 transition-all duration-200 hover:border-purple-500/40 hover:bg-[#0d0d16] cursor-pointer" onclick="openSetDetail('${jsStr(url)}')">
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0 pt-1">
-        <div class="text-sm font-semibold text-gray-100 truncate">${escapeHtml(title)}</div>
-        <div class="text-[11px] text-gray-500 mt-0.5">${s.questionCount || 0} questions${isLatest ? ' · <span class="text-green-400 font-medium">latest</span>' : ''}</div>
-      </div>
-      <div class="play-split relative flex h-9 w-9 flex-shrink-0 items-center overflow-hidden rounded-xl border border-[#22222e] bg-[#16161f] transition-all duration-200 group-hover:w-40">
+  const badgeHtml = published
+    ? `<div class="play-split relative flex h-9 w-9 flex-shrink-0 items-center overflow-hidden rounded-xl border border-[#22222e] bg-[#16161f] transition-all duration-200 group-hover:w-40">
         <a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="Open on Blooket"
           class="pointer-events-none absolute inset-y-0 left-0 flex w-1/2 items-center justify-center gap-1 text-[11px] font-semibold text-purple-300 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 hover:bg-purple-500/20">${icon('external', 'w-3 h-3')} Blooket</a>
         <button type="button" onclick="event.stopPropagation();startQuiz('${jsStr(url)}','${jsStr(title)}')" title="Play in the app"
           class="pointer-events-none absolute inset-y-0 right-0 flex w-1/2 items-center justify-center gap-1 text-[11px] font-semibold text-teal-300 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 hover:bg-teal-500/20">${icon('play', 'w-3 h-3')} Play</button>
         <button type="button" onclick="event.stopPropagation();startQuiz('${jsStr(url)}','${jsStr(title)}')"
           class="absolute inset-0 flex items-center justify-center text-gray-300 transition-opacity duration-200 group-hover:pointer-events-none group-hover:opacity-0">${icon('play', 'w-4 h-4')}</button>
+      </div>`
+    : `<div class="play-split relative flex h-9 w-9 flex-shrink-0 items-center overflow-hidden rounded-xl border border-[#22222e] bg-[#16161f] transition-all duration-200 group-hover:w-40">
+        <button type="button" onclick="event.stopPropagation();startQuiz('${jsStr(localKey)}','${jsStr(title)}','${jsStr('')}', true)" title="Review this local set anyway"
+          class="pointer-events-none absolute inset-0 flex items-center justify-center gap-1 text-[11px] font-semibold text-amber-300 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 hover:bg-amber-500/20">${icon('play', 'w-3 h-3')} Review</button>
+        <div class="absolute inset-0 flex flex-col items-center justify-center gap-0.5 text-amber-400 transition-opacity duration-200 group-hover:pointer-events-none group-hover:opacity-0" title="Blooket publish didn't finish yet — but the questions are saved and reviewable locally">
+          ${icon('clock', 'w-3.5 h-3.5')}
+          <span class="text-[8px] font-medium uppercase tracking-wide">Local</span>
+        </div>
+      </div>`;
+  return `
+  <div class="group rounded-xl border ${published ? 'border-[#22222e]' : 'border-amber-500/20'} bg-[#0a0a0f] p-3.5 transition-all duration-200 hover:border-purple-500/40 hover:bg-[#0d0d16] cursor-pointer" onclick="${id ? `openSetDetail('${jsStr(id)}')` : ''}">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0 pt-1">
+        <div class="text-sm font-semibold text-gray-100 truncate">${escapeHtml(title)}</div>
+        <div class="text-[11px] text-gray-500 mt-0.5">${s.questionCount || 0} questions${isLatest ? ' · <span class="text-green-400 font-medium">latest</span>' : ''}${!published ? ' · <span class="text-amber-400 font-medium">local only</span>' : ''}</div>
       </div>
+      ${badgeHtml}
     </div>
     <div class="flex items-center justify-between gap-2 mt-3">
       <div class="text-[10px] text-gray-600">${s.createdAt ? escapeHtml(s.createdAt.slice(0, 10)) : ''}</div>
@@ -470,8 +611,8 @@ function renderCustomSetsSection(customSets) {
   const rows = sets.slice(0, limit).map(s => renderSetCard(s, '#2dd4bf', false)).join('');
   const extra = sets.length - limit;
   return `
-  <div class="review-class-section bg-[#12121b] border border-[#22222e] rounded-2xl overflow-hidden">
-    <div class="relative flex items-center gap-3 px-4 py-3.5 border-b border-[#22222e]" style="background:linear-gradient(90deg, #2dd4bf16, transparent 62%)">
+  <div class="review-class-section bg-[#12121b] border border-[#22222e] rounded-2xl">
+    <div class="relative flex items-center gap-3 px-4 py-3.5 border-b border-[#22222e] overflow-hidden" style="background:linear-gradient(90deg, #2dd4bf16, transparent 62%)">
       <span class="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style="background:#2dd4bf24; color:#2dd4bf">${icon('file', 'w-4 h-4')}</span>
       <div class="min-w-0 flex-1">
         <div class="text-sm font-semibold text-white">Other</div>

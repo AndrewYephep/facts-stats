@@ -62,6 +62,40 @@ The active flow looks like this:
 7. The scrape runner in [sis_login.py](sis_login.py) refreshes the underlying JSON data, while [dashboard_server.py](dashboard_server.py) streams live logs to the UI.
 8. Optional notifications can be sent through [grades_emailer.py](grades_emailer.py).
 
+### System Map: Realtime Activity Model
+
+The [System Map](system_view/) (`system_view/monitor.py`, served on port `8123`) is the
+live "Academic OS" network graph of every service, data file, and edge. Edge-flow
+animations appear **only when real data actually moves** — never on idle inference and
+never on the map's own probing. It runs as the `facts-monitor` systemd unit.
+
+Rather than having the map constantly poll every dashboard endpoint (wasteful, and it
+would make edges light up for synthetic health checks), activity is pushed **from the
+dashboard to the map**:
+
+1. **Dashboard records real requests.** `dashboard_server.py` adds an HTTP middleware
+   (`_record_activity`) that logs every genuine `GET /api/*` request into an in-memory
+   deque. It skips plumbing (`/health`, `/login`, `/static/`, etc.) and skips any request
+   carrying the monitor's `X-Monitor-Probe: 1` header — so the monitor's own probes can
+   never look like real usage.
+2. **Dashboard pushes batches.** A daemon thread (`_activity_push_loop`) drains the deque
+   every ~0.4s, coalesces duplicate paths, and fire-and-forget POSTs `{paths:[...]}` to the
+   monitor at `POST {MONITOR_URL}/ingest` (default `http://127.0.0.1:8123/ingest`). When no
+   data is moving, no network packet is sent at all.
+3. **Monitor maps paths to edges.** The `/ingest` handler (`Telemetry.ingest`) runs each
+   path through `_activity_edges_for` (`ACTIVITY_EDGES`) — a table that maps a real
+   endpoint to the *exact* edges that carry its data (e.g. `/api/computed/*` → `e08,e09,e13,
+   e14,e17`) — and appends a `kind:"flow"` event carrying `edges:[...]`.
+4. **Frontend bursts exactly those edges.** The System Map frontend
+   (`system_view/index.html`) reads `/api/status`; when an event has an explicit `edges`
+   list, it calls `burstMany(edges, 1)` so only the precise data-carrying edges animate for
+   ~4s and then decay (`BURST_DECAY`).
+
+This keeps the map accurate and cheap: the monitor does light passive reads + one `/health`
+probe per service, and the dashboard is silent over the wire until a human (or a scheduled
+job) actually touches data. The frontend also holds bursts that correspond to ongoing real
+transfers (scrape lanes, Blooket generate/publish, scheduler timers) while they are active.
+
 ## Main User-Facing Features
 
 ### Dashboard Overview
@@ -135,7 +169,7 @@ Classes are linked to notes in `data/settings.json` under `trilium.notes` (`clas
 
 - [compute_bridge.py](compute_bridge.py) produces the derived dashboard payload.
 - [grades_analytics.py](grades_analytics.py) normalizes raw grade data, merges history, and builds watchlists and summary stats.
-- [build_dashboard_v2.py](build_dashboard_v2.py) is the older HTML/dashboard builder that still exists in the repository as a generator for the standalone dashboard output.
+- [build_dashboard_v2.py](build_dashboard_v2.py) contains the legacy standalone HTML dashboard builder. Its `build()`/`build_html()` HTML-output path is no longer used — the live GradeTrack frontend (`gradetrack/`) is served by `dashboard_server.py` instead. Only its `build_payload()` helper is still imported by the server.
 
 ### AI
 

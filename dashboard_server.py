@@ -6,20 +6,21 @@ import hmac
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs
 from urllib.request import Request as UrlRequest, urlopen
-from typing import Optional
+from typing import Dict, Optional
 
 import bcrypt
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -40,18 +41,21 @@ from grades_config import (
     load_settings,
     save_settings,
 )
-from ai_insights import ask_question, get_saved_insights, remove_manual_insight, _grade_math
+from ai_insights import ask_question, ask_question_stream, get_saved_insights, remove_manual_insight, _grade_math
 from blooket_builder import job_status as blooket_job_status
 from blooket_builder import start_pipeline as blooket_start_pipeline
 from blooket_builder import start_custom_pipeline as blooket_start_custom_pipeline
 from blooket_builder import load_saved_sets as blooket_load_saved_sets
 from blooket_builder import saved_sets_mtime as blooket_saved_sets_mtime
 from blooket_builder import find_set_by_url as blooket_find_set_by_url
+from blooket_builder import find_set_by_local_key as blooket_find_set_by_local_key
+from blooket_builder import find_set_by_url_or_local as blooket_find_set_by_url_or_local
 from blooket_builder import update_set as blooket_update_set
 from blooket_builder import delete_set as blooket_delete_set
 from trilium_client import (
     TriliumError,
     check_connection,
+    get_class_note,
     get_config,
     get_note,
     get_note_content,
@@ -63,6 +67,10 @@ from trilium_client import (
     set_class_note,
     unset_class_note,
 )
+
+import note_quiz  # Daily note quiz generator + SQLite tracker
+import note_quiz_scheduler  # One-shot per-class endTime scheduler
+import levels_state  # Levels-based review state (SQLite, per set)
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +125,16 @@ _scrape_job = {"process": None, "logs": [], "exitCode": None}
 _scrape_lock = threading.Lock()
 _auto_scrape_seen: set[str] = set()
 
+# Real dashboard request activity, pushed to the system map monitor so the map
+# animates only on real data transfers (no polling / synthetic probes).
+MONITOR_URL = os.getenv("MONITOR_URL", "http://127.0.0.1:8123")
+_req_activity: deque = deque(maxlen=512)
+_req_activity_lock = threading.Lock()
+_ACTIVITY_SKIP_PREFIXES = (
+    "/static/", "/js/", "/css/", "/logo.png", "/favicon.ico",
+    "/login", "/logout", "/health",
+)
+
 SCRAPE_PERIODS = {"all", "q1", "q2", "q3", "q4", "s1", "s2", "year"}
 
 app = FastAPI(title="Grades Dashboard")
@@ -131,6 +149,26 @@ async def _no_cache_static(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
     return response
+
+
+@app.middleware("http")
+async def _record_activity(request: Request, call_next):
+    """Record real dashboard API hits for the system map. The monitor identifies
+    its own probes with X-Monitor-Probe so they never count as activity; only
+    genuine browser loads/refreshes drive the map's data-flow animation."""
+    path = request.url.path
+    if (
+        request.method == "GET"
+        and path.startswith("/api/")
+        and not path.startswith(_ACTIVITY_SKIP_PREFIXES)
+        and request.headers.get("X-Monitor-Probe") != "1"
+    ):
+        try:
+            with _req_activity_lock:
+                _req_activity.append(path)
+        except Exception:
+            pass
+    return await call_next(request)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(STATIC_DIR):
@@ -411,6 +449,114 @@ def health():
     return {"ok": True}
 
 
+# ─── Update manager ───────────────────────────────────────────────────────
+# Lightweight wrapper around ./update.sh. The dashboard doesn't itself do a
+# git pull — that happens in update.sh, with a strict denylist of protected
+# paths. The dashboard just queries the script, exposes the result, and
+# triggers an update run on demand. No paths in protected locations are
+# touched by any of these handlers.
+
+_UPDATE_CACHE = {"checked_at": 0.0, "data": None}
+_UPDATE_CACHE_TTL = 60 * 30  # 30 min; the daily timer also refreshes
+
+
+def _update_install_dir():
+    """Where the repo lives. Honor env first, then .env, then the cwd."""
+    p = os.environ.get("FACTS_INSTALL_DIR")
+    if p and os.path.isdir(os.path.join(p, ".git")):
+        return p
+    here = os.getcwd()
+    if os.path.isdir(os.path.join(here, ".git")):
+        return here
+    # Walk upward looking for the .git directory.
+    cur = here
+    for _ in range(6):
+        cur = os.path.dirname(cur)
+        if os.path.isdir(os.path.join(cur, ".git")):
+            return cur
+    return ""
+
+
+def _update_run(cmd, cwd, timeout=30):
+    try:
+        out = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True,
+            timeout=timeout, check=False,
+        )
+        return out.returncode, out.stdout, out.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+    except Exception as exc:
+        return 1, "", repr(exc)
+
+
+@app.get("/api/update/check")
+def update_check():
+    """Return installed vs latest commit. Cheap cache (30 min)."""
+    install_dir = _update_install_dir()
+    if not install_dir:
+        return {"installed": "", "available": "", "behind": 0, "error":
+                "Install dir not found. Run ./install.sh first."}
+    now = time.time()
+    if _UPDATE_CACHE["data"] and (now - _UPDATE_CACHE["checked_at"]) < _UPDATE_CACHE_TTL:
+        return _UPDATE_CACHE["data"]
+    try:
+        # Refresh remote refs in the background; don't fetch synchronously if
+        # network is slow — surface the local-vs-origin comparison immediately
+        # and update asynchronously on the next call.
+        installed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=install_dir, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        available = subprocess.run(
+            ["git", "rev-parse", "--short", "origin/main"],
+            cwd=install_dir, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        behind = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            cwd=install_dir, capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or "0"
+    except Exception as exc:
+        return {"installed": "", "available": "", "behind": 0, "available": False,
+                "error": repr(exc)}
+
+    payload = {
+        "installed": installed,
+        "available": available,
+        "behind": int(behind) if behind.isdigit() else 0,
+        "available": installed != available,
+        "install_dir": install_dir,
+        "checked_at": now,
+    }
+    _UPDATE_CACHE["checked_at"] = now
+    _UPDATE_CACHE["data"] = payload
+    return payload
+
+
+@app.post("/api/update/run")
+def update_run():
+    """Run ./update.sh --yes and stream stdout/stderr back. Refresh cache."""
+    install_dir = _update_install_dir()
+    update_script = os.path.join(install_dir, "update.sh") if install_dir else ""
+    if not update_script or not os.path.isfile(update_script):
+        raise HTTPException(status_code=412, detail="update.sh not found in install dir")
+    # Refuse if there are changes to a protected path in the diff. update.sh
+    # also enforces this, but checking here gives the user a clean JSON error.
+    code, _, _ = _update_run(
+        ["bash", "-c", "git rev-parse --short HEAD && git rev-parse --short origin/main"],
+        cwd=install_dir, timeout=10,
+    )
+    if code != 0:
+        raise HTTPException(status_code=503, detail="git rev-parse failed")
+    code, out, err = _update_run(
+        ["bash", "update.sh", "--yes"],
+        cwd=install_dir, timeout=180,
+    )
+    # Always invalidate cache after a run, success or not.
+    _UPDATE_CACHE["checked_at"] = 0
+    return {"ok": code == 0, "code": code, "stdout": out[-2000:], "stderr": err[-2000:]}
+
+
 @app.on_event("startup")
 def _bootstrap_credentials():
     """Seed data/auth.json on startup so the dashboard always has credentials."""
@@ -521,6 +667,58 @@ def _read_json(path):
         return None
 
 
+_MONTH_ORDER = {
+    "January": 1, "February": 2, "March": 3, "April": 4, "May": 5, "June": 6,
+    "July": 7, "August": 8, "September": 9, "October": 10, "November": 11, "December": 12,
+}
+
+
+def _load_school_events():
+    """Parse the school calendar JSON into a flat list of {date, name, category, uniformDay}.
+
+    Date strings may be a single day ("August 13") or a same-month range
+    ("September 23-29") — ranges are expanded into one entry per day, with
+    extra fields startDate/endDate so the frontend can render spanning pills.
+    Colors are resolved on the frontend from `category`/`uniformDay`.
+    """
+    raw = _read_json(SCHOOL_CALENDAR_PATH)
+    if not raw or not raw.get("months"):
+        return []
+    out = []
+    for month_block in raw.get("months") or []:
+        year = int(month_block.get("year") or 0)
+        for ev in month_block.get("events") or []:
+            date_str = str(ev.get("date") or "").strip()
+            name = str(ev.get("event") or "").strip()
+            if not date_str or not name:
+                continue
+            m = re.match(r"([A-Za-z]+)\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?$", date_str)
+            if not m:
+                continue
+            month = _MONTH_ORDER.get(m.group(1))
+            if not month:
+                continue
+            start = int(m.group(2))
+            end = int(m.group(3) or start)
+            start_date = f"{year:04d}-{month:02d}-{start:02d}"
+            end_date = f"{year:04d}-{month:02d}-{end:02d}"
+            is_multi = end > start
+            for day in range(start, end + 1):
+                entry = {
+                    "date": f"{year:04d}-{month:02d}-{day:02d}",
+                    "name": name,
+                    "category": ev.get("category"),
+                    "uniformDay": bool(ev.get("uniformDay")),
+                }
+                if is_multi:
+                    entry["startDate"] = start_date
+                    entry["endDate"] = end_date
+                    entry["isMultiDay"] = True
+                out.append(entry)
+    out.sort(key=lambda e: e["date"])
+    return out
+
+
 def _mask_key(value):
     if not value:
         return ""
@@ -540,7 +738,26 @@ def _settings_response(settings):
     if trilium.get("token"):
         trilium["token"] = _mask_key(trilium["token"])
     result["trilium"] = trilium
+    result["availableYears"] = _available_grade_years()
     return result
+
+
+def _available_grade_years():
+    """Years the dashboard can show. Live academic_year plus any archive dir."""
+    years = set()
+    try:
+        live = _read_json(GRADES_JSON_PATH) or {}
+        ay = str(live.get("academic_year") or "").strip()
+        if ay:
+            years.add(ay)
+    except Exception:
+        pass
+    archive_root = os.path.join(os.path.dirname(__file__), "data", "archive")
+    if os.path.isdir(archive_root):
+        for name in os.listdir(archive_root):
+            if os.path.isdir(os.path.join(archive_root, name)) and name:
+                years.add(name)
+    return sorted(years, reverse=True)
 
 
 @app.get("/api/settings")
@@ -590,7 +807,103 @@ async def post_settings(request: Request):
     if not save_settings(body):
         raise HTTPException(status_code=500, detail="Could not write settings")
 
+    # Rebuild the note-quiz scheduler so any new schedule/period takes effect.
+    try:
+        note_quiz_scheduler.rebuild()
+    except Exception as exc:
+        log.warning("note-quiz scheduler rebuild failed: %s", exc)
+
     return {"success": True}
+
+
+@app.get("/api/prompts")
+def list_prompts_endpoint():
+    """Return every AI prompt in the app: its key, name, description, the
+    default, and the user's current override (if any)."""
+    from prompts import list_prompts as _list_prompts
+    return {"prompts": _list_prompts(load_settings())}
+
+
+@app.post("/api/prompts")
+async def save_prompts(request: Request):
+    """Save user-overridden prompts. Body: {prompts: {key: text, ...}}.
+    Pass an empty string or whitespace-only to clear the override (revert to default)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    posted = body.get("prompts")
+    if not isinstance(posted, dict):
+        raise HTTPException(status_code=400, detail="'prompts' must be a {key: text} object")
+
+    current = load_settings()
+    cur_prompts = dict(current.get("prompts") or {})
+    for k, v in posted.items():
+        s = str(v or "")
+        if s.strip():
+            cur_prompts[k] = s
+        else:
+            cur_prompts.pop(k, None)
+    current["prompts"] = cur_prompts
+    current["updated"] = datetime.now(timezone.utc).isoformat()
+    if not save_settings(current):
+        raise HTTPException(status_code=500, detail="Could not write settings")
+    return {"success": True}
+
+
+@app.post("/api/prompts/reset")
+async def reset_prompt_endpoint(request: Request):
+    """Reset one prompt to its hardcoded default. Body: {key: 'prompt_key'}."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    key = str(body.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'key'")
+    from prompts import PROMPTS
+    if key not in PROMPTS:
+        raise HTTPException(status_code=404, detail=f"Unknown prompt key: {key}")
+    current = load_settings()
+    cur_prompts = dict(current.get("prompts") or {})
+    cur_prompts.pop(key, None)
+    current["prompts"] = cur_prompts
+    current["updated"] = datetime.now(timezone.utc).isoformat()
+    if not save_settings(current):
+        raise HTTPException(status_code=500, detail="Could not write settings")
+    return {"success": True, "default": PROMPTS[key]["default"]}
+
+
+@app.post("/api/email/render")
+async def render_email_preview(request: Request):
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    from grades_emailer import DEFAULT_EMAIL_TEMPLATE, EMAIL_TEMPLATE_VARIABLES, email_preview
+    html = email_preview(body.get("template"), body.get("scope") or "both")
+    return {"html": html, "defaultTemplate": DEFAULT_EMAIL_TEMPLATE, "variables": EMAIL_TEMPLATE_VARIABLES}
+
+
+@app.post("/api/email/test")
+async def send_test_email_endpoint(request: Request):
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    from grades_emailer import send_test_email
+    recipients = body.get("recipients")
+    if recipients is not None and not isinstance(recipients, list):
+        raise HTTPException(status_code=400, detail="recipients must be a list of email addresses")
+    try:
+        sent = send_test_email(recipients)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"sent": bool(sent)}
 
 
 @app.get("/api/ollama/models")
@@ -613,6 +926,20 @@ def get_ollama_models():
         return {"models": [], "error": f"Could not reach Ollama Cloud: {exc.reason}"}
     except Exception as exc:
         return {"models": [], "error": str(exc)}
+
+
+@app.get("/api/readme")
+def get_readme():
+    """Return the project README.md so the About pane can render and copy it."""
+    readme_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
+    if not os.path.isfile(readme_path):
+        return {"markdown": ""}
+    try:
+        with open(readme_path, encoding="utf-8") as handle:
+            return {"markdown": handle.read()}
+    except OSError as exc:
+        log.warning("Could not read README.md: %s", exc)
+        return {"markdown": ""}
 
 
 @app.get("/api/status")
@@ -640,6 +967,7 @@ _compute_cache = {"key": None, "value": None}
 NEW_GRADES_PATH = os.path.join(os.path.dirname(__file__), "data", "new_grades.json")
 CLASSROOM_ASSIGNMENTS_PATH = os.path.join(os.path.dirname(__file__), "data", "classroom_assignments.json")
 USER_TODOS_PATH = os.path.join(os.path.dirname(__file__), "data", "user_todos.json")
+SCHOOL_CALENDAR_PATH = os.path.join(os.path.dirname(__file__), "data", "school_calendar_26_67.json")
 
 
 def _load_new_grade_markers():
@@ -681,19 +1009,134 @@ def _save_user_todos(data):
         json.dump(data, handle, indent=2, sort_keys=False)
 
 
+def _normalise_name(name):
+    """Lowercase, strip common prefixes/suffixes, collapse whitespace."""
+    import re as _re
+    s = str(name or "").lower().strip()
+    # Strip common prefixes
+    for prefix in ("ap ", "honors ", "hon ", "accelerated "):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+    # Strip common suffixes
+    for suffix in (" i", " ii", " iii", " iv"):
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+    # Collapse whitespace and remove punctuation
+    s = _re.sub(r"[^a-z0-9\s]", " ", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+# Common abbreviation → full-name expansions for classroom fuzzy matching.
+_ABBREVIATIONS = {
+    "eng": "english",
+    "govt": "government",
+    "gov": "government",
+    "geom": "geometry",
+    "chem": "chemistry",
+    "math": "mathematics",
+    "bio": "biology",
+    "phys": "physics",
+    "sci": "science",
+    "hist": "history",
+    "precalc": "precalculus",
+    "precal": "precalculus",
+}
+
+
+def _expand_abbreviations(tokens):
+    """Return a set with both the original tokens and any known expansions."""
+    expanded = set()
+    for t in tokens:
+        expanded.add(t)
+        if t in _ABBREVIATIONS:
+            expanded.add(_ABBREVIATIONS[t])
+    return expanded
+
+
+def _match_classroom_to_classes(assignments, active_classes):
+    """Fuzzy-match Google Classroom courseName → GradeTrack active class id.
+
+    Pops a ``matchedClassId`` onto each assignment dict so the frontend can
+    use the class's configured color.  Matching is two-way substring with
+    abbreviation expansion:
+      - "GEOM" → "geometry" matches active class "Geometry"
+      - "US GOVT" → "us government" matches active class "Government"
+      - "CHEM I" → "chem" → "chemistry" matches active class "Chemistry"
+    """
+    import re as _re
+
+    # Build lookup of normalised active-class names → class id
+    class_map = []  # [(normalised_tokens_set, class_id, original_name)]
+    for cls in active_classes:
+        if not cls.get("isAcademic"):
+            continue
+        name = cls.get("name") or cls.get("shortName") or ""
+        if not name:
+            continue
+        norm = _normalise_name(name)
+        tokens = set(norm.split())
+        expanded = _expand_abbreviations(tokens)
+        class_map.append((expanded, norm, str(cls.get("id")), name))
+
+    for a in assignments:
+        cn = a.get("courseName") or ""
+        norm = _normalise_name(cn)
+        if not norm:
+            a["matchedClassId"] = None
+            continue
+
+        norm_tokens = set(norm.split())
+        norm_expanded = _expand_abbreviations(norm_tokens)
+
+        best_match = None
+        best_score = 0
+
+        for class_expanded, class_norm, class_id, orig_name in class_map:
+            # Exact match
+            if norm == class_norm:
+                best_match = class_id
+                best_score = 100
+                break
+            # One is a substring of the other
+            if norm in class_norm or class_norm in norm:
+                score = 50 + min(len(norm), len(class_norm))
+                if score > best_score:
+                    best_match = class_id
+                    best_score = score
+                continue
+            # Token overlap (with abbreviation expansion)
+            overlap = norm_expanded & class_expanded
+            if overlap:
+                score = 10 * len(overlap)
+                if score > best_score:
+                    best_match = class_id
+                    best_score = score
+
+        a["matchedClassId"] = best_match if best_score >= 10 else None
+
+
 def _computed_payload():
+    settings_probe = load_settings()
+    display_year = str(settings_probe.get("displayYear") or "").strip()
+    live_path = GRADES_JSON_PATH
+    if display_year:
+        alt_path = os.path.join(os.path.dirname(__file__), "data", "archive", display_year, "grades_data.json")
+        if os.path.isfile(alt_path):
+            live_path = alt_path
     key = (
-        os.path.getmtime(GRADES_JSON_PATH) if os.path.isfile(GRADES_JSON_PATH) else 0,
+        os.path.getmtime(live_path) if os.path.isfile(live_path) else 0,
         os.path.getmtime(GRADES_HISTORY_PATH) if os.path.isfile(GRADES_HISTORY_PATH) else 0,
         os.path.getmtime(SETTINGS_PATH) if os.path.isfile(SETTINGS_PATH) else 0,
         os.path.getmtime(NEW_GRADES_PATH) if os.path.isfile(NEW_GRADES_PATH) else 0,
         os.path.getmtime(CLASSROOM_ASSIGNMENTS_PATH) if os.path.isfile(CLASSROOM_ASSIGNMENTS_PATH) else 0,
         os.path.getmtime(USER_TODOS_PATH) if os.path.isfile(USER_TODOS_PATH) else 0,
+        os.path.getmtime(SCHOOL_CALENDAR_PATH) if os.path.isfile(SCHOOL_CALENDAR_PATH) else 0,
     )
     if _compute_cache["key"] == key:
         return _compute_cache["value"]
 
-    raw = _read_json(GRADES_JSON_PATH)
+    raw = _read_json(live_path)
     if not raw or not raw.get("classes"):
         raise HTTPException(status_code=500, detail="No grade data")
 
@@ -772,6 +1215,26 @@ def _computed_payload():
         cid = str(a.get("courseId") or "")
         if cid and aliases.get(cid):
             a["courseName"] = aliases[cid]
+
+    # ── Fuzzy-match Google Classroom courseName → GradeTrack active class ──
+    # Google Classroom names ("GEOM", "AP CHEM") rarely match exactly, so we
+    # normalise both sides and check substring containment both ways.
+    active_classes = payload.get("activeClasses") or []
+    _match_classroom_to_classes(assignments, active_classes)
+
+    # Merge submissionAttachments into materials so the detail pane shows them
+    for a in assignments:
+        subs = a.get("submissionAttachments") or []
+        if subs:
+            existing = a.get("materials") or []
+            seen = {(m.get("url") or m.get("title")) for m in existing}
+            for s in subs:
+                key = s.get("url") or s.get("title")
+                if key and key not in seen:
+                    existing.append(s)
+                    seen.add(key)
+            a["materials"] = existing
+
     payload["classroomAssignments"] = assignments
     payload["classroomMeta"] = {
         "count": len(payload["classroomAssignments"]),
@@ -779,6 +1242,7 @@ def _computed_payload():
         "receivedAtIso": classroom.get("received_at_iso"),
     }
     payload["userTodos"] = _load_user_todos()
+    payload["schoolEvents"] = _load_school_events()
 
     _compute_cache["key"] = key
     _compute_cache["value"] = payload
@@ -801,11 +1265,23 @@ async def ask_ai_insight(request: Request):
     question = str(body.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is empty")
+    if body.get("stream"):
+        return StreamingResponse(_ai_insights_stream(question, body.get("conversation") or []), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     try:
         result = ask_question(_computed_payload(), load_settings(), question, body.get("conversation") or [])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return result
+
+
+def _ai_insights_stream(question, conversation):
+    try:
+        for event in ask_question_stream(_computed_payload(), load_settings(), question, conversation):
+            yield "data: " + json.dumps(event) + "\n\n"
+    except ValueError as exc:
+        yield "data: " + json.dumps({"type": "error", "message": str(exc)}) + "\n\n"
+    except Exception as exc:
+        yield "data: " + json.dumps({"type": "error", "message": "Failed to ask: " + str(exc)}) + "\n\n"
 
 
 @app.delete("/api/insights/{insight_id}")
@@ -822,6 +1298,8 @@ def _collect_scrape_output(process):
             _scrape_job["logs"].append(line.rstrip())
             _scrape_job["logs"] = _scrape_job["logs"][-500:]
     code = process.wait()
+    _cleanup_stale_scrape_browser()
+    _sweep_tmp_profiles()
     with _scrape_lock:
         _scrape_job["exitCode"] = code
         _scrape_job["logs"].append(f"Scrape finished with exit code {code}.")
@@ -924,6 +1402,314 @@ def trilium_unlink(classId: str = ""):
     return {"classId": classId, "removed": removed}
 
 
+# ─── NOTE QUIZ (Trilium-driven daily quizzes) ───────────────────
+def _trilium_linked_class_ids():
+    settings = load_settings()
+    return {str(cid) for cid, link in (get_notes_map(settings) or {}).items() if link}
+
+
+def _resolve_note_quiz_class(class_id: str, settings=None):
+    """Return (linked_note, chapter_note) for a classId, or raise HTTPException.
+    chapter_note may be None if no chapter child exists yet.
+    """
+    settings = settings or load_settings()
+    link = get_class_note(class_id, settings)
+    if not link:
+        raise HTTPException(status_code=400, detail=f"Class {class_id} has no linked Trilium folder.")
+    chapter = None
+    try:
+        chapter = latest_chapter(link["noteId"], settings)
+    except TriliumError as exc:
+        raise HTTPException(status_code=400, detail=f"Trilium error: {exc}") from exc
+    return link, chapter
+
+
+# In-memory note-quiz generation jobs. The generate endpoint starts a daemon
+# thread and returns immediately with a jobId; the frontend polls the status
+# endpoint so the "saving / generating" state always resolves (no dead fetches).
+_NQ_JOBS: Dict[str, dict] = {}
+_NQ_JOBS_LOCK = threading.Lock()
+
+
+def _run_note_quiz_job(job_id: str, class_id: str, clarification: str = None) -> None:
+    """Background generate flow. Updates _NQ_JOBS[job_id] with phase + result so
+    the UI can render accurate progress and always get a terminal state."""
+    job = {"status": "running", "phase": "starting", "classId": class_id}
+    with _NQ_JOBS_LOCK:
+        _NQ_JOBS[job_id] = job
+
+    def set_phase(phase: str) -> None:
+        with _NQ_JOBS_LOCK:
+            if job.get("status") == "running":
+                job["phase"] = phase
+
+    def fail(message: str) -> None:
+        with _NQ_JOBS_LOCK:
+            job.update(status="error", phase="done", error=message)
+
+    try:
+        set_phase("fetching")
+        settings = load_settings()
+        if not note_quiz.is_class_enabled(settings, class_id):
+            fail("Note quizzes are not enabled for this class.")
+            return
+        link, chapter = _resolve_note_quiz_class(class_id, settings)
+        if not chapter:
+            fail("This class's Trilium folder has no chapter notes yet.")
+            return
+        chapter_note_id = chapter["noteId"]
+        set_phase("diffing")
+        try:
+            content = get_note_content(chapter_note_id, settings)
+        except TriliumError as exc:
+            fail(f"Trilium error: {exc}")
+            return
+        snapshot = note_quiz.latest_snapshot(class_id, chapter_note_id)
+        diff = note_quiz.diff_appended(
+            content,
+            snapshot["snapshot_hash"] if snapshot else None,
+            int(snapshot["snapshot_lines"]) if snapshot else 0,
+        )
+        min_lines = note_quiz.class_min_lines(settings, class_id)
+        if len(diff["added_lines"]) < min_lines:
+            fail(f"Only {len(diff['added_lines'])} new line(s) since last quiz — need at least {min_lines}.")
+            return
+        set_phase("ai")
+        try:
+            generated = note_quiz.generate_questions(diff["added_lines"], settings, clarification=clarification, depths=diff.get("line_depths"))
+            questions = generated["questions"]
+            set_title = generated.get("title") or ""
+        except (ValueError, RuntimeError) as exc:
+            fail(str(exc))
+            return
+        set_phase("saving")
+        class_name = ""
+        try:
+            for cls in (_computed_payload().get("activeClasses") or []):
+                if str(cls.get("id")) == class_id:
+                    class_name = cls.get("shortName") or cls.get("name") or ""
+                    break
+        except Exception:
+            pass
+        set_id = note_quiz.save_set(
+            class_id=class_id,
+            class_name=class_name,
+            chapter_note_id=chapter_note_id,
+            chapter_title=chapter.get("title") or "",
+            source_lines=diff["added_lines"],
+            snapshot_lines=diff["total_lines"],
+            model=(settings.get("ollamaModel") or "gpt-oss:120b"),
+            questions=questions,
+            status="ready",
+            title=set_title,
+            depths=diff.get("line_depths"),
+        )
+        with _NQ_JOBS_LOCK:
+            job.update(
+                status="done",
+                phase="done",
+                setId=set_id,
+                questions=len(questions),
+                chapterTitle=chapter.get("title") or "",
+            )
+    except Exception as exc:
+        logging.getLogger("dashboard").warning("note quiz job failed: %s", exc)
+        fail(f"Unexpected error: {exc}")
+
+
+@app.post("/api/note_quiz/sets/generate")
+async def note_quiz_generate(request: Request):
+    """Start generating a quiz set for a class (runs in a background thread).
+    Returns a jobId immediately; poll /api/note_quiz/sets/jobs/{jobId}."""
+    body = await request.json()
+    class_id = str(body.get("classId") or "").strip()
+    if not class_id:
+        raise HTTPException(status_code=400, detail="classId is required")
+    clarification = str(body.get("clarification") or "").strip() or None
+    job_id = f"nq{int(time.time() * 1000)}{os.urandom(4).hex()}"
+    thread = threading.Thread(target=_run_note_quiz_job, args=(job_id, class_id), kwargs={"clarification": clarification}, daemon=True)
+    thread.start()
+    return {"jobId": job_id, "classId": class_id}
+
+
+@app.get("/api/note_quiz/sets/jobs/{job_id}")
+def note_quiz_job_status(job_id: str):
+    """Pollable status for a background note-quiz generation job."""
+    with _NQ_JOBS_LOCK:
+        job = _NQ_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return dict(job)
+
+
+@app.post("/api/note_quiz/sets/preview")
+async def note_quiz_preview(request: Request):
+    """Show what a new quiz would cover without saving. Useful for the manual-trigger UI."""
+    body = await request.json()
+    class_id = str(body.get("classId") or "").strip()
+    if not class_id:
+        raise HTTPException(status_code=400, detail="classId is required")
+    settings = load_settings()
+    if not note_quiz.is_class_enabled(settings, class_id):
+        raise HTTPException(status_code=400, detail="Note quizzes are not enabled for this class.")
+    link, chapter = _resolve_note_quiz_class(class_id, settings)
+    chapter_note_id = chapter["noteId"] if chapter else link["noteId"]
+    try:
+        content = get_note_content(chapter_note_id, settings)
+    except TriliumError as exc:
+        raise HTTPException(status_code=400, detail=f"Trilium error: {exc}") from exc
+    snapshot = note_quiz.latest_snapshot(class_id, chapter_note_id)
+    diff = note_quiz.diff_appended(
+        content,
+        snapshot["snapshot_hash"] if snapshot else None,
+        int(snapshot["snapshot_lines"]) if snapshot else 0,
+    )
+    return {
+        "classId": class_id,
+        "chapterNoteId": chapter_note_id,
+        "chapterTitle": (chapter or {}).get("title") or link.get("noteTitle") or "",
+        "addedLineCount": len(diff["added_lines"]),
+        "totalLines": diff["total_lines"],
+        "preview": diff["added_lines"][:30],  # cap preview payload
+    }
+
+
+@app.get("/api/note_quiz/sets")
+def note_quiz_sets_list(classId: str = "", limit: int = 100):
+    rows = note_quiz.list_sets(class_id=classId or None)
+    rows = rows[:max(1, min(500, int(limit)))]
+    for r in rows:
+        r.pop("source_lines_json", None)
+        r.pop("snapshot_hash", None)
+    return {"sets": rows}
+
+
+@app.get("/api/note_quiz/sets/{set_id:int}")
+def note_quiz_sets_get(set_id: int):
+    s = note_quiz.get_set(int(set_id))
+    if not s:
+        raise HTTPException(status_code=404, detail="Set not found")
+    return s
+
+
+@app.delete("/api/note_quiz/sets/{set_id:int}")
+def note_quiz_sets_delete(set_id: int):
+    note_quiz.delete_set(int(set_id))
+    return {"ok": True}
+
+
+@app.post("/api/note_quiz/attempts")
+async def note_quiz_attempt_record(request: Request):
+    body = await request.json()
+    set_id = int(body.get("setId") or 0)
+    answers = body.get("answers") or {}
+    duration = body.get("durationSeconds")
+    if not set_id:
+        raise HTTPException(status_code=400, detail="setId is required")
+    norm = {int(k): int(v) for k, v in answers.items()}
+    result = note_quiz.record_attempt(set_id, norm, duration_seconds=duration)
+    return result
+
+
+@app.get("/api/note_quiz/stats")
+def note_quiz_stats(classId: str = ""):
+    return note_quiz.dashboard_stats(class_id=classId or None)
+
+
+@app.get("/api/note_quiz/sets/{set_id:int}/missed")
+def note_quiz_sets_missed(set_id: int):
+    return note_quiz.missed_questions_summary(int(set_id))
+
+
+@app.get("/api/note_quiz/today")
+def note_quiz_today(classId: str = ""):
+    """Sets generated today (for the Review tab 'Take a missed quiz' UI)."""
+    init_db = note_quiz.init_db
+    init_db()
+    with note_quiz._lock, note_quiz._conn() as c:
+        today_str = c.execute("SELECT date('now', 'localtime')").fetchone()[0]
+        if classId:
+            rows = c.execute(
+                """SELECT * FROM note_quiz_sets
+                   WHERE class_id=? AND substr(generated_at,1,10)=?
+                   ORDER BY id DESC""",
+                (str(classId), today_str),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """SELECT * FROM note_quiz_sets
+                   WHERE substr(generated_at,1,10)=?
+                   ORDER BY id DESC""",
+                (today_str,),
+            ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["classId"] = d.pop("class_id")
+        d["className"] = d.pop("class_name", "")
+        d["chapterNoteId"] = d.pop("chapter_note_id")
+        d["chapterTitle"] = d.pop("chapter_title")
+        d["snapshotLines"] = d.pop("snapshot_lines")
+        d["generatedAt"] = d.pop("generated_at")
+        d["generatedByModel"] = d.pop("generated_by_model")
+        d["lineCount"] = d.pop("line_count")
+        d["firstTryPct"] = d.pop("first_try_pct", None)
+        d.pop("source_lines_json", None)
+        d.pop("snapshot_hash", None)
+        out.append(d)
+    counts = note_quiz.question_counts([d["id"] for d in out])
+    for d in out:
+        d["questionCount"] = counts.get(d["id"], 0)
+    return {"date": today_str, "count": len(out), "sets": out}
+
+
+@app.get("/api/note_quiz/scheduler/status")
+def note_quiz_scheduler_status():
+    return note_quiz_scheduler.status()
+
+
+@app.get("/api/note_quiz/calendar")
+def note_quiz_calendar(year: int, month: int):
+    return note_quiz.calendar_status(int(year), int(month))
+
+
+@app.get("/api/note_quiz/sets/by-date")
+def note_quiz_sets_by_date(date: str, classId: str = ""):
+    """Sets generated on a specific date (for the calendar past-day view)."""
+    init_db = note_quiz.init_db
+    init_db()
+    with note_quiz._lock, note_quiz._conn() as c:
+        if classId:
+            rows = c.execute(
+                "SELECT * FROM note_quiz_sets WHERE substr(generated_at,1,10)=? AND class_id=? ORDER BY id DESC",
+                (date, str(classId)),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM note_quiz_sets WHERE substr(generated_at,1,10)=? ORDER BY id DESC",
+                (date,),
+            ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["classId"] = d.pop("class_id")
+        d["className"] = d.pop("class_name", "")
+        d["chapterNoteId"] = d.pop("chapter_note_id")
+        d["chapterTitle"] = d.pop("chapter_title")
+        d["snapshotLines"] = d.pop("snapshot_lines")
+        d["generatedAt"] = d.pop("generated_at")
+        d["generatedByModel"] = d.pop("generated_by_model")
+        d["lineCount"] = d.pop("line_count")
+        d["firstTryPct"] = d.pop("first_try_pct", None)
+        d.pop("source_lines_json", None)
+        d.pop("snapshot_hash", None)
+        out.append(d)
+    counts = note_quiz.question_counts([d["id"] for d in out])
+    for d in out:
+        d["questionCount"] = counts.get(d["id"], 0)
+    return {"date": date, "sets": out}
+
+
 # ─── BLOOKET QUIZ BUILDER ────────────────────────────────────────
 _blooket_classes_cache = {"t": 0.0, "value": None, "mtime": None}
 
@@ -940,14 +1726,53 @@ def _blooket_classes_payload():
     computed = _computed_payload()
     notes = get_notes_map(settings)
     saved = blooket_load_saved_sets()
-    rows = []
+
+    # Collect noteIds for parallel Trilium fetching
+    _num_re = re.compile(r'(\d+(?:\.\d+)*)')
+    def _ch_number(title):
+        m = _num_re.search((title or "").strip())
+        if not m: return None
+        parts = [float(p) for p in m.group(1).split(".")]
+        return sum(p / (10 ** i) for i, p in enumerate(parts))
+
+    class_links = []
     for cls in computed.get("activeClasses") or []:
         link = notes.get(str(cls.get("id")))
-        if not link:
-            continue
+        if link:
+            class_links.append((cls, link))
+
+    # Fetch all Trilium note data in parallel
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    _fetched = {}
+    def _fetch_chapters(nid):
         try:
-            latest = latest_chapter(link["noteId"], settings)
+            return nid, get_note(nid, settings)
         except TriliumError:
+            return nid, None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch_chapters, link["noteId"]): link["noteId"]
+                   for _, link in class_links}
+        for f in as_completed(futures):
+            nid, nd = f.result()
+            _fetched[nid] = nd
+
+    rows = []
+    for cls, link in class_links:
+        try:
+            all_chapters = []
+            note_data = _fetched.get(link["noteId"])
+            children = note_data.get("children") or [] if note_data else []
+            for ch in children:
+                all_chapters.append({
+                    "noteId": ch.get("noteId"),
+                    "title": ch.get("title"),
+                    "number": _ch_number(ch.get("title")),
+                })
+            all_chapters.sort(key=lambda c: (c["number"] is None, -(c["number"] or 0)))
+            latest = all_chapters[0] if all_chapters else None
+        except Exception:
+            all_chapters = []
             latest = None
         cls_sets = saved.get(str(cls.get("id"))) or {}
         sets = sorted(cls_sets.values(), key=lambda s: s.get("createdAt") or "", reverse=True)
@@ -961,6 +1786,7 @@ def _blooket_classes_payload():
             "noteId": link.get("noteId"),
             "noteTitle": link.get("noteTitle") or link.get("title") or "",
             "latest": latest,
+            "chapters": all_chapters,
             "sets": sets,
             "set": current,
         })
@@ -980,12 +1806,26 @@ def blooket_classes():
 
 
 @app.get("/api/blooket/quiz")
-def blooket_quiz(url: str = ""):
-    """Return the saved questions for a set, looked up by its setUrl."""
+def blooket_quiz(url: str = "", localKey: str = ""):
+    """Return the saved questions for a set. Looked up by setUrl, or by
+    localKey for unpublished sets (so the local app can still review them when
+    the Blooket publish failed)."""
+    saved = blooket_load_saved_sets()
+    key = (localKey or "").strip()
+    if key:
+        for class_sets in saved.values():
+            if not isinstance(class_sets, dict):
+                continue
+            for entry in class_sets.values():
+                if isinstance(entry, dict) and (entry.get("localKey") == key):
+                    return {
+                        "title": entry.get("title"),
+                        "chapterTitle": entry.get("chapterTitle"),
+                        "questions": entry.get("questions") or [],
+                    }
     url = (url or "").strip()
     if not url:
-        raise HTTPException(status_code=400, detail="url is required")
-    saved = blooket_load_saved_sets()
+        raise HTTPException(status_code=400, detail="url or localKey is required")
     for class_sets in saved.values():
         if not isinstance(class_sets, dict):
             continue
@@ -1007,11 +1847,15 @@ async def blooket_generate(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     class_id = str(body.get("classId") or "").strip()
     prompt = str(body.get("prompt") or "").strip()
+    note_id = str(body.get("noteId") or "").strip()
     if not class_id:
         raise HTTPException(status_code=400, detail="classId is required")
-    if not blooket_start_pipeline(class_id, prompt):
-        raise HTTPException(status_code=409, detail="A Blooket generation is already running")
-    return {"started": True}
+    result = blooket_start_pipeline(class_id, prompt, note_id)
+    return {
+        "started": bool(result.get("started")),
+        "queued": bool(result.get("queued")),
+        "id": result.get("id"),
+    }
 
 
 @app.post("/api/blooket/custom")
@@ -1027,9 +1871,26 @@ async def blooket_custom(request: Request):
     if not content:
         raise HTTPException(status_code=400, detail="Add some text or a document to build a quiz from.")
     label = os.path.splitext(file_name)[0] if file_name else "Custom"
-    if not blooket_start_custom_pipeline(content, prompt, set_url, label):
-        raise HTTPException(status_code=409, detail="A Blooket generation is already running")
-    return {"started": True}
+    result = blooket_start_custom_pipeline(content, prompt, set_url, label)
+    return {
+        "started": bool(result.get("started")),
+        "queued": bool(result.get("queued")),
+        "id": result.get("id"),
+    }
+
+
+@app.post("/api/blooket/cancel")
+async def blooket_cancel(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    job_id = str(body.get("id") or "").strip()
+    if not job_id:
+        raise HTTPException(status_code=400, detail="id is required")
+    from blooket_builder import cancel_queued as blooket_cancel_queued
+    removed = blooket_cancel_queued(job_id)
+    return {"ok": removed}
 
 
 @app.patch("/api/blooket/set")
@@ -1038,9 +1899,9 @@ async def blooket_update_set_route(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
-    set_url = str(body.get("setUrl") or "").strip()
-    if not set_url:
-        raise HTTPException(status_code=400, detail="setUrl is required")
+    identifier = str(body.get("setUrl") or body.get("localKey") or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="setUrl or localKey is required")
     updates = {}
     if "title" in body and body["title"] is not None:
         updates["title"] = str(body["title"]).strip()
@@ -1050,7 +1911,7 @@ async def blooket_update_set_route(request: Request):
         updates["questions"] = body["questions"]
     if not updates:
         raise HTTPException(status_code=400, detail="No updates provided")
-    if not blooket_update_set(set_url, updates):
+    if not blooket_update_set(identifier, updates):
         raise HTTPException(status_code=404, detail="Set not found")
     _blooket_classes_cache["mtime"] = None
     return {"ok": True}
@@ -1062,29 +1923,64 @@ async def blooket_delete_set_route(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
-    set_url = str(body.get("setUrl") or "").strip()
-    if not set_url:
-        raise HTTPException(status_code=400, detail="setUrl is required")
-    if not blooket_delete_set(set_url):
+    identifier = str(body.get("setUrl") or body.get("localKey") or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="setUrl or localKey is required")
+    if not blooket_delete_set(identifier):
         raise HTTPException(status_code=404, detail="Set not found")
     _blooket_classes_cache["mtime"] = None
     return {"ok": True}
 
 
 @app.get("/api/blooket/set")
-async def blooket_get_set(setUrl: str = ""):
-    set_url = setUrl.strip()
-    if not set_url:
-        raise HTTPException(status_code=400, detail="setUrl query param required")
-    class_id, key, s = blooket_find_set_by_url(set_url)
+async def blooket_get_set(setUrl: str = "", localKey: str = ""):
+    identifier = (localKey or "").strip() or (setUrl or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="setUrl or localKey query param required")
+    class_id, key, s = blooket_find_set_by_url_or_local(identifier)
     if not s:
         raise HTTPException(status_code=404, detail="Set not found")
-    return {"set": s, "classId": class_id, "key": key}
+    is_local = not (s.get("setUrl") or "") or identifier == key or identifier == s.get("localKey")
+    return {"set": s, "classId": class_id, "key": key, "local": bool(is_local and not s.get("setUrl"))}
 
 
 @app.get("/api/blooket/status")
 def blooket_status():
     return blooket_job_status()
+
+
+# ─── Levels-based review state (persists to SQLite) ───────────────
+
+@app.get("/api/levels/state")
+def levels_state_get():
+    """All levels-based review progress keyed by set URL."""
+    return {"states": levels_state.all_states()}
+
+
+@app.put("/api/levels/state")
+async def levels_state_put(request: Request):
+    """Upsert the review state for a single set URL. Body: {setUrl, state}."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    set_url = str(body.get("setUrl") or "").strip()
+    state = body.get("state")
+    if not set_url:
+        raise HTTPException(status_code=400, detail="setUrl is required")
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=400, detail="state must be an object")
+    if not levels_state.put_state(set_url, state):
+        raise HTTPException(status_code=500, detail="Could not write state")
+    return {"ok": True}
+
+
+@app.delete("/api/levels/state/{set_url:path}")
+def levels_state_delete(set_url: str):
+    if not set_url:
+        raise HTTPException(status_code=400, detail="setUrl is required")
+    levels_state.delete_state(set_url)
+    return {"ok": True}
 
 
 def _normalize_scrape_period(period: str) -> str:
@@ -1099,6 +1995,26 @@ def _validate_scrape_classes(classes: str) -> str:
     if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,-_ " for ch in value):
         raise ValueError("Invalid class selector")
     return value
+
+
+def _sweep_tmp_profiles():
+    """Clear leftover nodriver/Chromium tmp.* profiles from /tmp and the home
+    scratch dir. nodriver creates a tmp.* profile per browser launch; these
+    accumulate and fill the 4GB /tmp tmpfs. Called after each scrape job and
+    Blooket bot run finishes."""
+    for root in ("/tmp", os.path.join(os.path.expanduser("~"), ".blooket-tmp")):
+        try:
+            for entry in os.scandir(root):
+                try:
+                    if entry.name.startswith("tmp."):
+                        if entry.is_dir(follow_symlinks=False):
+                            shutil.rmtree(entry.path, ignore_errors=True)
+                        else:
+                            os.remove(entry.path)
+                except OSError:
+                    continue
+        except OSError:
+            continue
 
 
 def _cleanup_stale_scrape_browser():
@@ -1135,7 +2051,7 @@ def _launch_scrape_job(period: str, classes: str, label: str = "manual") -> bool
         _cleanup_stale_scrape_browser()
         command = [sys.executable, os.path.join(os.path.dirname(__file__), "sis_login.py"), "--period", period, "--classes", classes]
         env = dict(os.environ)
-        env["DISPLAY"] = ":1"
+        env["DISPLAY"] = os.environ.get("DISPLAY", ":0")
         env["XAUTHORITY"] = os.path.join(os.path.expanduser("~"), ".Xauthority")
         process = subprocess.Popen(command, cwd=os.path.dirname(__file__), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         _scrape_job.update({"process": process, "logs": [f"Starting {label}: " + " ".join(command)], "exitCode": None})
@@ -1214,6 +2130,72 @@ async def start_scrape(request: Request):
     return {"started": True}
 
 
+# ── Daily combined email scheduler ────────────────────────────────────────────
+
+def _email_schedule_config(settings):
+    """Read the daily-email schedule. Returns None unless enabled with times."""
+    email = settings.get("email") or {}
+    if not isinstance(email, dict):
+        return None
+    schedule = email.get("schedule") or {}
+    if not isinstance(schedule, dict):
+        return None
+    enabled = bool(schedule.get("enabled"))
+    if not enabled:
+        return None
+    times = _parse_schedule_times(schedule.get("times") or schedule.get("scheduleTimes"))
+    if not times:
+        return None
+    return {"times": times}
+
+
+def _send_daily_email_loop():
+    _email_seen = set()
+    while True:
+        try:
+            cfg = _email_schedule_config(load_settings())
+            if cfg:
+                now = datetime.now()
+                for scheduled in cfg["times"]:
+                    if now.hour == scheduled.hour and now.minute == scheduled.minute:
+                        key = f"{now.date().isoformat()}|{scheduled.strftime('%H:%M')}"
+                        if key in _email_seen:
+                            continue
+                        _email_seen.add(key)
+                        run_label = "morning" if scheduled.hour < 12 else "afternoon"
+                        try:
+                            from grades_emailer import send_daily_email
+                            log.info("Sending %s daily email", run_label)
+                            sent = send_daily_email(run_label=run_label)
+                            log.info("Daily email send %s", "ok" if sent else "failed/skipped")
+                        except Exception as exc:
+                            log.exception("Daily email send failed: %s", exc)
+            if len(_email_seen) > 128:
+                _email_seen.clear()
+        except Exception as exc:
+            log.exception("Daily email scheduler failed: %s", exc)
+        time.sleep(30)
+
+
+@app.post("/api/email/send-daily")
+async def send_daily_email_endpoint(request: Request):
+    """Manually trigger the combined daily email. Body optional: {run: 'morning'|'afternoon'}."""
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    run_label = str(body.get("run") or "").strip() or None
+    if run_label and run_label not in {"morning", "afternoon"}:
+        raise HTTPException(status_code=400, detail="run must be 'morning' or 'afternoon'")
+    try:
+        from grades_emailer import send_daily_email
+        sent = send_daily_email(run_label=run_label)
+    except Exception as exc:
+        log.exception("Manual daily email send failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"sent": bool(sent)}
+
+
 @app.get("/api/scrape/logs")
 def get_scrape_logs():
     with _scrape_lock:
@@ -1221,11 +2203,81 @@ def get_scrape_logs():
         return {"running": bool(process and process.poll() is None), "exitCode": _scrape_job["exitCode"], "logs": _scrape_job["logs"]}
 
 
+def _activity_push_loop():
+    """Drain real request activity in small batches and push it to the system
+    map monitor's /ingest endpoint (fire-and-forget). Only real activity triggers
+    a network send — idle is silent, so the map gets realtime data-flow events
+    without the monitor polling every endpoint."""
+    while True:
+        try:
+            batch = []
+            with _req_activity_lock:
+                while _req_activity and len(batch) < 40:
+                    batch.append(_req_activity.popleft())
+            if not batch:
+                time.sleep(0.5)
+                continue
+            # coalesce duplicates within the batch
+            unique = list(dict.fromkeys(batch))
+            payload = json.dumps({"ts": time.time(), "paths": unique}).encode("utf-8")
+            try:
+                req = UrlRequest(
+                    MONITOR_URL + "/ingest", data=payload,
+                    headers={"Content-Type": "application/json", "X-Monitor-Probe": "1"},
+                )
+                with urlopen(req, timeout=0.8):
+                    pass
+            except Exception:
+                pass  # monitor down / restarting — drop silently, retry next batch
+        except Exception:
+            pass
+        time.sleep(0.4)
+
+
+def _update_check_loop():
+    """Refresh the in-memory update comparison once a day so the sidebar
+    badge stays accurate without each page load paying for a git fetch.
+    Runs on a fixed cadence: every 12h. The /api/update/check endpoint also
+    forces a refresh, so this is mainly a backstop."""
+    import datetime
+    while True:
+        try:
+            try:
+                update_check()
+            except Exception as exc:
+                log.debug("Update check failed: %s", exc)
+            # Sleep ~12h in 5-minute chunks so process shutdown doesn't hang.
+            for _ in range(12 * 12):
+                time.sleep(300)
+        except Exception as exc:
+            log.exception("update-check loop error: %s", exc)
+            time.sleep(60)
+
+
+_update_check_thread = threading.Thread(target=_update_check_loop, daemon=True, name="update-check")
+
+
 @app.on_event("startup")
 def start_background_jobs():
     if not getattr(app.state, "auto_scrape_started", False):
         app.state.auto_scrape_started = True
         threading.Thread(target=_auto_scrape_loop, daemon=True).start()
+    if not getattr(app.state, "activity_push_started", False):
+        app.state.activity_push_started = True
+        threading.Thread(target=_activity_push_loop, daemon=True).start()
+    if not getattr(app.state, "email_push_started", False):
+        app.state.email_push_started = True
+        threading.Thread(target=_send_daily_email_loop, daemon=True).start()
+    try:
+        _update_check_thread.start()
+    except RuntimeError:
+        pass  # already started
+    # Build the note-quiz scheduler from current settings so endTime timers
+    # are queued before the first /api/note_quiz/* request arrives.
+    try:
+        note_quiz_scheduler.rebuild()
+    except Exception as exc:
+        log.warning("note-quiz scheduler startup rebuild failed: %s", exc)
 
 
 @app.get("/api/computed/overview")
@@ -1260,6 +2312,7 @@ def get_computed_assignments():
         "classroomAssignments": d["classroomAssignments"],
         "classroomMeta": d["classroomMeta"],
         "userTodos": d["userTodos"],
+        "schoolEvents": d["schoolEvents"],
     }
 
 
